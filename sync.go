@@ -285,6 +285,7 @@ type apiProject struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	IsDeleted  bool   `json:"is_deleted"`
+	IsArchived bool   `json:"is_archived"`
 	ChildOrder int    `json:"child_order"`
 }
 
@@ -650,7 +651,7 @@ func (c *Cache) CommentsFor(taskID string) []Comment {
 func (c *Cache) ProjectList() []Project {
 	ps := make([]apiProject, 0, len(c.Projects))
 	for _, p := range c.Projects {
-		if !p.IsDeleted {
+		if !p.IsDeleted && !p.IsArchived {
 			ps = append(ps, p)
 		}
 	}

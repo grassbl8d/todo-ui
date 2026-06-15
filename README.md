@@ -135,28 +135,30 @@ entirely from the keyboard.
 | `A`             | Add a task straight to the **most recent project**           |
 | `c`             | Complete the selected task                                   |
 | `x`             | Delete the selected task (asks first)                        |
-| `p`             | **View by project** — pick a project; `ctrl+n` new project, `ctrl+d` delete |
+| `p`             | **View by project** — pick a project; `ctrl+n` new, `ctrl+e` archive, `ctrl+d` delete |
 | `P`             | **Filter by priority** — pick p1–p4 from a menu              |
 | `^`             | **Pin (focus)** — show only the selected task; `:unpin` to release |
 | `i` / `I`       | **💡 Catch an idea / browse ideas** (saved locally)         |
-| `*`             | **Toggle light / dark theme**                                |
+| `+`             | **Toggle light / dark theme**                                |
 | `O` / `F`       | **Tag / untag** the selected task as ongoing / follow-up    |
 | `o`             | **Ongoing view** — tasks with your ongoing label (default `@ongoing`) |
 | `f`             | **Follow-up view** — tasks with your follow-up label (default `@ffup`) |
 | `t`             | **Due today** (only)                                        |
 | `T`             | **Due today or earlier** (today + overdue)                  |
+| `W`             | **Due this week or last week**                              |
+| `m`             | **Due this month**                                          |
+| `M`             | **Due this month or last month**                            |
 | `d`             | **Deadline is today**                                       |
 | `D`             | **Deadline is today or earlier**                            |
 | `R`             | **Recently added** — the last 10 tasks you created           |
 | `/`             | **Find** — local text search, or a local filter expression  |
-| `S`             | **Filter** — type a filter that applies live as you type    |
 | `?`             | **Online search** — full Todoist filter grammar (needs network) |
 | `1`–`6`         | **Sort** by priority / due / deadline / project / name / labels (`0` = default; repeat to reverse) |
 | `b`             | **Back** — return to the previous view (like a browser)      |
-| `h` / `Esc`     | **Home** — back to all tasks / all projects                  |
+| `h` / `Esc`     | **Home** — clear all filters & views, back to all tasks      |
 | `r`             | Refresh the view from the local cache                       |
 | `s`             | **Sync** — push queued changes & pull updates               |
-| `,`             | **Menu** — ongoing/follow-up labels & auto-sync interval     |
+| `,`             | **Menu** — ongoing/follow-up labels, auto-sync interval & date format |
 | `X`             | **Clear data** — remove token, cache & queue (asks first)    |
 | `H`             | **Help** — open the (scrollable) keyboard reference          |
 | `q` / `Ctrl+C`  | Quit                                                         |
@@ -170,10 +172,10 @@ comments. From there:
 |-----------|-----------------------------------------|
 | `1`–`4`   | Set priority (p1–p4)                     |
 | `t`       | Set / change the due date (natural language) |
-| `D`       | Set / change the **deadline** (`YYYY-MM-DD`, empty clears) |
+| `D`       | Set the **deadline** — pick Today / Tomorrow / Next week / Next month / Custom / Clear |
 | `l`       | Edit labels (comma-separated, without `@`) |
 | `e`       | Edit the task name                       |
-| `m`       | Add a comment (existing comments are listed above) |
+| `>`       | Add a comment (existing comments are listed above) |
 | `c`       | Complete the task                        |
 | `b` / `Esc` | Back to the list                      |
 
@@ -217,7 +219,7 @@ in, so you can run several at once.
 
 ### Theme
 
-Press **`*`** to toggle between **dark** (default) and **light** themes; the choice is
+Press **`+`** to toggle between **dark** (default) and **light** themes; the choice is
 saved.
 
 ### Add syntax (natural language)

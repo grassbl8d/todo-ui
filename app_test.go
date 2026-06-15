@@ -52,11 +52,124 @@ func TestToTaskPriorityInversion(t *testing.T) {
 	}
 }
 
+func TestDateFormatHelpers(t *testing.T) {
+	defer func() { dateFmt = "MDY" }()
+	dateFmt = "MDY"
+	if got := fmtDate("2026-12-31"); got != "12-31-2026" {
+		t.Fatalf("MDY fmtDate = %q", got)
+	}
+	if got := fmtDate("2026-12-31 09:00"); got != "12-31-2026 09:00" {
+		t.Fatalf("MDY fmtDate with time = %q", got)
+	}
+	if got := normalizeDateInput("12-31-2026"); got != "2026-12-31" {
+		t.Fatalf("MDY normalize = %q", got)
+	}
+	dateFmt = "DMY"
+	if got := fmtDate("2026-12-31"); got != "31-12-2026" {
+		t.Fatalf("DMY fmtDate = %q", got)
+	}
+	if got := normalizeDateInput("31/12/2026"); got != "2026-12-31" {
+		t.Fatalf("DMY normalize = %q", got)
+	}
+	dateFmt = "YMD"
+	if got := fmtDate("2026-12-31"); got != "2026-12-31" {
+		t.Fatalf("YMD fmtDate = %q", got)
+	}
+	// natural language passes through normalize untouched
+	if got := normalizeDateInput("next week"); got != "next week" {
+		t.Fatalf("NL normalize should pass through, got %q", got)
+	}
+}
+
+func TestParseHumanDate(t *testing.T) {
+	today := "2026-06-17" // Wednesday
+	cases := map[string]string{
+		"today":      "2026-06-17",
+		"tomorrow":   "2026-06-18",
+		"next week":  "2026-06-24",
+		"next month": "2026-07-17",
+		"2026-08-01": "2026-08-01",
+		"friday":     "2026-06-19",
+		"in 3 days":  "2026-06-20",
+	}
+	for in, want := range cases {
+		if got := parseHumanDate(in, today); got != want {
+			t.Errorf("parseHumanDate(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDeadlinePicker(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "task", Priority: 1}
+	m.deriveAll()
+	// open detail, then deadline picker
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	m = nm.(model)
+	if m.mode != modeDeadlinePick {
+		t.Fatal("D should open the deadline picker")
+	}
+	// press 1 → Today
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	m = nm.(model)
+	if got := m.cache.Items["1"].Deadline; got == nil || got.Date != todayStr() {
+		t.Fatalf("selecting Today should set deadline to today, got %+v", got)
+	}
+}
+
+func TestHomeFlash(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	m = nm.(model)
+	if !m.homeFlash {
+		t.Fatal("h should set the home flash")
+	}
+	if cmd == nil {
+		t.Fatal("h should schedule the flash-off tick")
+	}
+	nm, _ = m.Update(homeFlashOffMsg{})
+	if nm.(model).homeFlash {
+		t.Fatal("flash-off should clear the flash")
+	}
+}
+
 func TestToTaskDeadline(t *testing.T) {
 	c := newCache()
 	got := c.toTask(apiItem{ID: "1", Content: "x", Priority: 1, Deadline: &apiDeadline{Date: "2026-12-31"}})
 	if got.Deadline != "2026-12-31" {
 		t.Fatalf("deadline = %q", got.Deadline)
+	}
+}
+
+func TestEvalFilterWeekMonth(t *testing.T) {
+	today := "2026-06-17" // a Wednesday
+	due := func(d string) Task { return Task{DueDate: d} }
+	cases := []struct {
+		expr string
+		date string
+		want bool
+	}{
+		{"this week", "2026-06-15", true},  // Monday this week
+		{"this week", "2026-06-21", true},  // Sunday this week
+		{"this week", "2026-06-10", true},  // last week
+		{"this week", "2026-06-07", false}, // two weeks ago
+		{"this month", "2026-06-01", true},
+		{"this month", "2026-06-30", true},
+		{"this month", "2026-05-31", false},      // last month excluded
+		{"this+last month", "2026-05-15", true},  // last month included
+		{"this+last month", "2026-06-15", true},  // this month
+		{"this+last month", "2026-04-30", false}, // two months ago
+	}
+	for _, c := range cases {
+		if got := EvalFilter(c.expr, due(c.date), today); got != c.want {
+			t.Errorf("EvalFilter(%q, due=%s) = %v, want %v", c.expr, c.date, got, c.want)
+		}
 	}
 }
 
@@ -613,10 +726,10 @@ func TestThemeToggle(t *testing.T) {
 	m := newTestModel()
 	m.width, m.height = 100, 40
 	start := m.settings.Light
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("*")})
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
 	m = nm.(model)
 	if m.settings.Light == start {
-		t.Fatal("* should toggle the light/dark setting")
+		t.Fatal("+ should toggle the light/dark setting")
 	}
 	// applyTheme should have switched the active palette
 	if m.settings.Light && brandRed != lightTheme.Accent {
@@ -712,11 +825,11 @@ func TestPinnedAddCommentShowsComments(t *testing.T) {
 	m.cache.Items["1"] = apiItem{ID: "1", Content: "focus", Priority: 1}
 	m.pinnedID = "1"
 	m.deriveAll()
-	// press m to add a comment
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	// press > to add a comment
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(">")})
 	m = nm.(model)
 	if m.mode != modeCommentAdd {
-		t.Fatal("m should open the comment input while pinned")
+		t.Fatal("> should open the comment input while pinned")
 	}
 	for _, r := range "looks good" {
 		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -820,30 +933,6 @@ func TestTagOngoingFollowup(t *testing.T) {
 	m = nm.(model)
 	if got := m.cache.Items["1"].Labels; len(got) != 1 || got[0] != m.settings.FollowupLabel {
 		t.Fatalf("F should add the follow-up label, got %v", got)
-	}
-}
-
-func TestLiveFilter(t *testing.T) {
-	m := newTestModel()
-	m.width, m.height = 100, 40
-	m.list.SetSize(100, 36)
-	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
-		{ID: "1", Content: "a", Priority: "p1"},
-		{ID: "2", Content: "b", Priority: "p4"},
-	}})
-	m = nm.(model)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")})
-	m = nm.(model)
-	if m.mode != modeFilter {
-		t.Fatal("S should open the live filter")
-	}
-	// typing 'p1' filters live to the one p1 task
-	for _, r := range "p1" {
-		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = nm.(model)
-	}
-	if got := len(m.list.Items()); got != 1 {
-		t.Fatalf("live filter 'p1' should leave 1 task, got %d", got)
 	}
 }
 

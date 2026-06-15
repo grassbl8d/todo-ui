@@ -17,7 +17,7 @@ import (
 
 // version is the default shown in-app; release builds override it with
 // -ldflags "-X main.version=vX.Y.Z". Bump this when cutting a new version.
-var version = "v0.1.3"
+var version = "v0.1.5"
 
 // ---------- theming (light / dark) ----------
 
@@ -130,10 +130,10 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		meta = append(meta, lipgloss.NewStyle().Foreground(projectColor).Render(t.Project))
 	}
 	if strings.TrimSpace(t.DueDate) != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(dueColor).Render(t.DueDate))
+		meta = append(meta, lipgloss.NewStyle().Foreground(dueColor).Render(fmtDate(t.DueDate)))
 	}
 	if strings.TrimSpace(t.Deadline) != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(deadlineColor).Render("⚑ "+t.Deadline))
+		meta = append(meta, lipgloss.NewStyle().Foreground(deadlineColor).Render("⚑ "+fmtDate(t.Deadline)))
 	}
 	if strings.TrimSpace(t.Labels) != "" {
 		meta = append(meta, lipgloss.NewStyle().Foreground(labelColor).Render(t.Labels))
@@ -230,8 +230,20 @@ const (
 	modeProjectDelete // confirm deleting a project (in the picker)
 	modeIdeaAdd       // 💡 capture a new idea (overlay)
 	modeIdeaList      // 💡 browse captured ideas
-	modeFilter        // live filter input (S) — filters the list as you type
+	modeDeadlinePick  // pick a deadline from quick options
 )
+
+// deadlineOptions are the quick picks shown when setting a deadline.
+var deadlineOptions = []struct{ label, phrase string }{
+	{"Today", "today"},
+	{"Tomorrow", "tomorrow"},
+	{"This weekend (Sat)", "saturday"},
+	{"Next week", "next week"},
+	{"End of month", "end of month"},
+	{"Next month", "next month"},
+	{"Custom date…", "custom"},
+	{"Clear deadline", "clear"},
+}
 
 // editField is which task field the detail editor is changing.
 type editField int
@@ -335,6 +347,8 @@ type model struct {
 	projDelTarget Project   // project pending delete-confirmation
 	ideas        []Idea     // locally-captured ideas (newest first)
 	ideaCursor   int        // selected row in the idea list
+	dlCursor     int        // selected row in the deadline picker
+	homeFlash    bool       // brief highlight of the home/clear hint when pressed
 	helpOffset   int        // scroll offset of the help page
 	addProject   Project    // project chosen for the task currently being added
 	recents      []Project  // recently-chosen projects, most recent first (persisted)
@@ -360,6 +374,7 @@ type tokenCheckedMsg struct {
 	authErr bool // token rejected (vs. just offline)
 }
 type autoSyncTickMsg struct{ gen int }
+type homeFlashOffMsg struct{}
 type onlineResultMsg struct {
 	query string
 	items []apiItem
@@ -403,6 +418,7 @@ func initialModel() model {
 		status:   "ready",
 	}
 	m.applyThemeFromSettings()
+	dateFmt = m.settings.DateFormat
 	m.deriveAll()
 	if !HasToken() {
 		m.beginOnboard("Welcome! Paste your Todoist API token to get started.")
@@ -981,6 +997,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("online: %s — %d", msg.query, len(m.onlineResults))
 		return m, nil
 
+	case homeFlashOffMsg:
+		m.homeFlash = false
+		return m, nil
+
 	case autoSyncTickMsg:
 		if msg.gen != m.tickGen || m.settings.SyncSeconds <= 0 {
 			return m, nil // stale or disabled
@@ -1068,8 +1088,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateIdeaAdd(msg)
 		case modeIdeaList:
 			return m.updateIdeaList(msg)
-		case modeFilter:
-			return m.updateFilter(msg)
+		case modeDeadlinePick:
+			return m.updateDeadlinePick(msg)
 		}
 	}
 
@@ -1083,7 +1103,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While pinned (focus mode), block view-switching to keep you on one task.
 	if m.pinnedID != "" {
 		switch msg.String() {
-		case "m":
+		case ">":
 			// Add a comment to the pinned task.
 			m.detailID = m.pinnedID
 			m.mode = modeCommentAdd
@@ -1100,7 +1120,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.comments = m.cache.CommentsFor(m.pinnedID)
 			}
 			return m, nil
-		case "a", "A", "p", "P", "o", "f", "t", "T", "d", "D", "R", "S",
+		case "a", "A", "p", "P", "o", "f", "t", "T", "W", "m", "M", "d", "D", "R",
 			"/", "?", ",", "b", "h", "1", "2", "3", "4", "5", "6", "0":
 			m.status = "📌 pinned — type :unpin (then Enter) to switch tasks"
 			return m, nil
@@ -1109,7 +1129,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
-	case "*":
+	case "+":
 		m.settings.Light = !m.settings.Light
 		m.settings.Save()
 		m.applyThemeFromSettings()
@@ -1240,6 +1260,15 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "T":
 		// Tasks due today and earlier (today + overdue).
 		return m, m.commit(viewState{filter: "today | overdue"})
+	case "W":
+		// Tasks due this week or last week.
+		return m, m.commit(viewState{filter: "this week"})
+	case "m":
+		// Tasks due this month.
+		return m, m.commit(viewState{filter: "this month"})
+	case "M":
+		// Tasks due this month or last month.
+		return m, m.commit(viewState{filter: "this+last month"})
 	case "?":
 		// Online search using Todoist's full filter grammar.
 		m.mode = modeOnlineSearch
@@ -1256,16 +1285,6 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.optCursor = 0
 		m.err = ""
 		return m, nil
-	case "S":
-		// Live filter — applies as you type (supports filter expressions).
-		m.mode = modeFilter
-		m.err = ""
-		m.input.EchoMode = textinput.EchoNormal
-		m.input.Placeholder = "filter: today · @ongoing · #Work & p1 · overdue"
-		m.input.SetValue(m.filter)
-		m.input.CursorEnd()
-		m.input.Focus()
-		return m, textinput.Blink
 	case "O":
 		// Tag/untag the selected task with the ongoing label.
 		if t, ok := m.selectedTask(); ok {
@@ -1333,8 +1352,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "b":
 		return m, m.goBack()
 	case "h", "esc":
-		// Home — back to the all-projects / all-tasks view (undoable with b).
-		return m, m.commit(viewState{})
+		// Home — clear all filters/views (undoable with b), with a brief flash.
+		m.homeFlash = true
+		cmd := m.commit(viewState{})
+		flash := tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return homeFlashOffMsg{} })
+		return m, tea.Batch(cmd, flash)
 	case "H":
 		m.mode = modeHelp
 		m.helpOffset = 0
@@ -1518,6 +1540,13 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeProjectDelete
 		}
 		return m, nil
+	case "ctrl+e":
+		// Archive the selected project.
+		if it, ok := m.projList.SelectedItem().(projItem); ok &&
+			it.kind != kindSep && it.p.ID != allProjectsID && it.p.ID != "" {
+			m.archiveProjectLocal(it.p)
+		}
+		return m, nil
 	case "backspace":
 		if m.projQuery != "" {
 			r := []rune(m.projQuery)
@@ -1573,6 +1602,18 @@ func (m *model) addProjectLocal(name string) {
 	m.status = "added project: #" + name
 }
 
+// archiveProjectLocal archives a project (kept on the server, hidden here).
+func (m *model) archiveProjectLocal(p Project) {
+	if it, ok := m.cache.Projects[p.ID]; ok {
+		it.IsArchived = true
+		m.cache.Projects[p.ID] = it
+	}
+	m.enqueue(Command{Type: "project_archive", UUID: genID(), Args: map[string]any{"id": p.ID}})
+	m.deriveAll()
+	m.setPickerItems()
+	m.status = "archived project: " + p.Name
+}
+
 // deleteProjectLocal removes a project (and its cached tasks) and queues a delete.
 func (m *model) deleteProjectLocal(p Project) {
 	delete(m.cache.Projects, p.ID)
@@ -1587,29 +1628,45 @@ func (m *model) deleteProjectLocal(p Project) {
 	m.status = "deleted project: " + p.Name
 }
 
-func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) updateDeadlinePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	choose := func(i int) (tea.Model, tea.Cmd) {
+		if i < 0 || i >= len(deadlineOptions) {
+			return m, nil
+		}
+		switch deadlineOptions[i].phrase {
+		case "custom":
+			return m, m.startEdit(efDeadline, dateInputHint()+" · or today/tomorrow/next week", m.detailTask.Deadline)
+		case "clear":
+			m.setDeadline(m.detailID, "")
+			m.mode = modeDetail
+			return m, nil
+		default:
+			m.setDeadline(m.detailID, parseHumanDate(deadlineOptions[i].phrase, todayStr()))
+			m.mode = modeDetail
+			return m, nil
+		}
+	}
 	switch msg.String() {
-	case "esc":
-		// cancel: restore the committed filter
-		m.mode = modeList
-		m.input.Blur()
-		m.filter = m.current.filter
-		m.applyView()
-		m.status = m.scopeStatus()
+	case "esc", "b":
+		m.mode = modeDetail
+		return m, nil
+	case "up", "k":
+		if m.dlCursor > 0 {
+			m.dlCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.dlCursor < len(deadlineOptions)-1 {
+			m.dlCursor++
+		}
 		return m, nil
 	case "enter":
-		val := strings.TrimSpace(m.input.Value())
-		m.mode = modeList
-		m.input.Blur()
-		return m, m.commit(viewState{filter: val})
+		return choose(m.dlCursor)
 	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	// Live: apply the typed filter on every keystroke.
-	m.filter = strings.TrimSpace(m.input.Value())
-	m.applyView()
-	m.status = fmt.Sprintf("filter: %s — %d", m.filter, len(m.list.Items()))
-	return m, cmd
+	if r := msg.String(); len(r) == 1 && r[0] >= '1' && r[0] <= '9' {
+		return choose(int(r[0] - '1'))
+	}
+	return m, nil
 }
 
 func (m model) updateIdeaAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1800,12 +1857,14 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		return m, m.startEdit(efDate, "today · tomorrow 9am · every monday · (empty clears)", "")
 	case "D":
-		return m, m.startEdit(efDeadline, "YYYY-MM-DD · (empty clears)", m.detailTask.Deadline)
+		m.mode = modeDeadlinePick
+		m.dlCursor = 0
+		return m, nil
 	case "l":
 		return m, m.startEdit(efLabels, "comma-separated, e.g. ongoing,follow-up", labelsCSV(m.detailTask.Labels))
 	case "e":
 		return m, m.startEdit(efContent, "task name", m.detailTask.Content)
-	case "m":
+	case ">":
 		m.mode = modeCommentAdd
 		m.input.Placeholder = "write a comment…"
 		m.input.SetValue("")
@@ -1857,7 +1916,13 @@ func (m model) updateDetailEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case efDate:
 			m.setDue(m.detailID, val)
 		case efDeadline:
-			m.setDeadline(m.detailID, val)
+			if val == "" {
+				m.setDeadline(m.detailID, "")
+			} else if d := parseHumanDate(normalizeDateInput(val), todayStr()); d != "" {
+				m.setDeadline(m.detailID, d)
+			} else {
+				m.status = "couldn't read date: " + val
+			}
 		case efLabels:
 			m.setLabels(m.detailID, val)
 		case efContent:
@@ -1987,6 +2052,7 @@ func (m model) optionRows() []struct{ label, value string } {
 		{"Ongoing label", "@" + m.settings.OngoingLabel},
 		{"Follow-up label", "@" + m.settings.FollowupLabel},
 		{"Background auto-sync", sync},
+		{"Date format", dateInputHint() + "  (enter to cycle)"},
 	}
 }
 
@@ -2009,6 +2075,18 @@ func (m model) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
+		if m.optCursor == 3 {
+			// Date format cycles in place (no text entry).
+			next := map[string]string{"MDY": "YMD", "YMD": "DMY", "DMY": "MDY"}
+			m.settings.DateFormat = next[m.settings.DateFormat]
+			if m.settings.DateFormat == "" {
+				m.settings.DateFormat = "MDY"
+			}
+			dateFmt = m.settings.DateFormat
+			m.settings.Save()
+			m.status = "date format: " + dateInputHint()
+			return m, nil
+		}
 		m.mode = modeOptionsEdit
 		m.input.EchoMode = textinput.EchoNormal
 		switch m.optCursor {
@@ -2188,7 +2266,7 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.helpView())
 	}
 
-	if m.mode == modeDetail || m.mode == modeDetailEdit || m.mode == modeCommentAdd {
+	if m.mode == modeDetail || m.mode == modeDetailEdit || m.mode == modeCommentAdd || m.mode == modeDeadlinePick {
 		if b := m.pinBanner(); b != "" {
 			return lipgloss.JoinVertical(lipgloss.Left, header, b, m.detailView())
 		}
@@ -2283,7 +2361,7 @@ func (m model) View() string {
 			bottom = accent.Render("Delete "+m.projDelTarget.Name+" and ALL its tasks?") +
 				lipgloss.NewStyle().Foreground(subColor).Render("   y delete · n cancel")
 		default:
-			bottom = helpStyle.Render("type to filter · ↑/↓ move · enter select · ctrl+n new · ctrl+d delete · esc cancel")
+			bottom = helpStyle.Render("type to filter · ↑/↓ move · enter select · ctrl+n new · ctrl+e archive · ctrl+d delete · esc")
 		}
 		picker := lipgloss.JoinVertical(lipgloss.Left, line, m.projList.View(), bottom)
 		return lipgloss.JoinVertical(lipgloss.Left, header, picker)
@@ -2300,9 +2378,6 @@ func (m model) View() string {
 		body = promptBox.Render(label + m.input.View())
 	case modeOnlineSearch:
 		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("Todoist search (online)  ")
-		body = promptBox.Render(label + m.input.View())
-	case modeFilter:
-		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("Filter  ")
 		body = promptBox.Render(label + m.input.View())
 	case modeCommand:
 		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(": ")
@@ -2436,10 +2511,10 @@ func (m model) pinnedFocusView(header string) string {
 			meta = append(meta, lipgloss.NewStyle().Foreground(projectColor).Render(t.Project))
 		}
 		if t.DueDate != "" {
-			meta = append(meta, lipgloss.NewStyle().Foreground(dueColor).Render("due "+t.DueDate))
+			meta = append(meta, lipgloss.NewStyle().Foreground(dueColor).Render("due "+fmtDate(t.DueDate)))
 		}
 		if t.Deadline != "" {
-			meta = append(meta, lipgloss.NewStyle().Foreground(deadlineColor).Render("⚑ "+t.Deadline))
+			meta = append(meta, lipgloss.NewStyle().Foreground(deadlineColor).Render("⚑ "+fmtDate(t.Deadline)))
 		}
 		if t.Labels != "" {
 			meta = append(meta, lipgloss.NewStyle().Foreground(labelColor).Render(t.Labels))
@@ -2487,7 +2562,7 @@ func (m model) pinnedFocusView(header string) string {
 			cToggle = "v hide comments"
 		}
 		rows = append(rows, "", dim.Render("type ")+accent.Render(":unpin")+dim.Render(" then Enter to release"))
-		rows = append(rows, accent.Render("m")+dim.Render(" add comment   ")+accent.Render(cToggle)+dim.Render("   enter open · c done · s sync"))
+		rows = append(rows, accent.Render(">")+dim.Render(" add comment   ")+accent.Render(cToggle)+dim.Render("   enter open · c done · s sync"))
 	}
 
 	inner := lipgloss.JoinVertical(lipgloss.Center, rows...)
@@ -2604,8 +2679,8 @@ func (m model) detailView() string {
 		"  " + title,
 		"",
 		field("Priority", t.Priority, lipgloss.NewStyle().Foreground(pc).Bold(true)),
-		field("Due", t.DueDate, lipgloss.NewStyle().Foreground(dueColor)),
-		field("Deadline", t.Deadline, lipgloss.NewStyle().Foreground(deadlineColor)),
+		field("Due", fmtDate(t.DueDate), lipgloss.NewStyle().Foreground(dueColor)),
+		field("Deadline", fmtDate(t.Deadline), lipgloss.NewStyle().Foreground(deadlineColor)),
 		field("Project", t.Project, lipgloss.NewStyle().Foreground(projectColor)),
 		field("Labels", t.Labels, lipgloss.NewStyle().Foreground(labelColor)),
 		field("ID", t.ID, label),
@@ -2633,10 +2708,24 @@ func (m model) detailView() string {
 	}
 	lines = append(lines, "")
 
-	if m.mode == modeDetailEdit {
+	if m.mode == modeDeadlinePick {
+		accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+		lines = append(lines, accent.Render("  Set deadline"), "")
+		for i, o := range deadlineOptions {
+			cur := "    "
+			st := lipgloss.NewStyle().Foreground(textColor)
+			if i == m.dlCursor {
+				cur = "  " + accent.Render("▸ ")
+				st = lipgloss.NewStyle().Foreground(brightColor).Bold(true)
+			}
+			num := lipgloss.NewStyle().Foreground(subColor).Render(fmt.Sprintf("%d ", i+1))
+			lines = append(lines, cur+num+st.Render(o.label))
+		}
+		lines = append(lines, "", helpStyle.Render("  ↑/↓ or 1-8 · enter select · esc cancel"))
+	} else if m.mode == modeDetailEdit {
 		titles := map[editField]string{
 			efDate:     "Set due date",
-			efDeadline: "Set deadline (YYYY-MM-DD)",
+			efDeadline: "Set deadline (" + dateInputHint() + ")",
 			efLabels:   "Set labels (comma-separated)",
 			efContent:  "Edit name",
 		}
@@ -2654,7 +2743,7 @@ func (m model) detailView() string {
 			key.Render("D") + label.Render(" deadline  ") +
 			key.Render("l") + label.Render(" labels  ") +
 			key.Render("e") + label.Render(" name  ") +
-			key.Render("m") + label.Render(" comment  ") +
+			key.Render(">") + label.Render(" comment  ") +
 			key.Render("^") + label.Render(" pin  ") +
 			key.Render("c") + label.Render(" done  ") +
 			key.Render("b") + label.Render(" back")
@@ -2682,7 +2771,7 @@ func helpLines() []string {
 		row("↑/↓ j/k", "Move selection"),
 		row("n / v", "Next page / previous page (also pgdn/pgup)"),
 		row("b", "Back — return to the previous view (like a browser)"),
-		row("h / esc", "Home — back to all tasks / all projects"),
+		row("h / esc", "Home — clear all filters & views, back to all tasks"),
 		row("q ctrl+c", "Quit"),
 		"",
 		head.Render("  Tasks"),
@@ -2703,7 +2792,7 @@ func helpLines() []string {
 		head.Render("  In the task view"),
 		row("1-4", "Set priority (p1–p4)"),
 		row("t", "Set due date    D  set deadline    l  set labels    e  edit name"),
-		row("m", "Add a comment (view existing comments above)"),
+		row(">", "Add a comment (view existing comments above)"),
 		row("c", "Complete    b/esc  back to the list"),
 		"",
 		head.Render("  Tagging"),
@@ -2714,22 +2803,24 @@ func helpLines() []string {
 		row("i", "💡 Catch an idea (saved locally; works even while pinned)"),
 		row("I", "💡 Browse captured ideas (x delete · esc close)"),
 		row("^", "Pin — focus on one task; only it shows (this session)"),
-		row("", "   while pinned: m add comment · v show/hide comments"),
+		row("", "   while pinned: > add comment · v show/hide comments"),
 		row(":unpin", "Release the pin (type : then unpin, Enter)"),
-		row("*", "Toggle light / dark theme"),
+		row("+", "Toggle light / dark theme"),
 		"",
 		head.Render("  Views & filters"),
-		row("p", "View by project (pick; ctrl+n new · ctrl+d delete · “↩ All Projects”)"),
+		row("p", "View by project (pick; ctrl+n new · ctrl+e archive · ctrl+d delete)"),
 		row("P", "Filter by priority (pick p1–p4 from the menu)"),
 		row("o", "Ongoing — tasks with your ongoing label (set in Menu)"),
 		row("f", "Follow-up — tasks with your follow-up label (set in Menu)"),
 		row("t", "Due today (only)"),
 		row("T", "Due today or earlier (today + overdue)"),
+		row("W", "Due this week or last week"),
+		row("m", "Due this month"),
+		row("M", "Due this month or last month"),
 		row("d", "Deadline is today"),
 		row("D", "Deadline is today or earlier"),
 		row("R", "Recently added — the last 10 tasks you created"),
 		row("/", "Search — plain words; or a local filter (today, #x & p1)"),
-		row("S", "Filter — type a filter that applies live as you type"),
 		row("?", "Online search — full Todoist filter grammar (needs network)"),
 		"",
 		head.Render("  Sort  (press the same number again to reverse)"),
@@ -2794,7 +2885,7 @@ func (m model) helpView() string {
 			pos = fmt.Sprintf("%d%%", off*100/m.maxHelpOffset())
 		}
 	}
-	hint := helpStyle.Render(fmt.Sprintf("  j/k ↑/↓ scroll · %s · * theme · any other key closes", pos))
+	hint := helpStyle.Render(fmt.Sprintf("  j/k ↑/↓ scroll · %s · + theme · any other key closes", pos))
 
 	return lipgloss.JoinVertical(lipgloss.Left, append(window, hint)...)
 }
@@ -2803,7 +2894,7 @@ func (m model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "*":
+	case "+":
 		// Toggle theme without leaving help.
 		m.settings.Light = !m.settings.Light
 		m.settings.Save()
@@ -2860,7 +2951,7 @@ func (m model) footer() string {
 	if m.settings.Light {
 		themeName = "light"
 	}
-	badges = append(badges, lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("*")+
+	badges = append(badges, lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("+")+
 		lipgloss.NewStyle().Foreground(subColor).Render(" "+themeName))
 	statusLine := statusStyle.Render(st)
 	if len(badges) > 0 {
@@ -2870,10 +2961,15 @@ func (m model) footer() string {
 		statusLine = errStyle.Render("⚠ " + m.err)
 	}
 
-	// "H help" first and accented so it's always visible even if the line clips.
-	keys := "q quit · a add · enter view · c done · x del · ^ pin · i idea · / find · S filter · p project · O/F tag · , menu · s sync"
-	right := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("H help") +
-		helpStyle.Render(" · "+keys)
+	// "H help" and "h home" first and accented so they're always visible even if clipped.
+	accentKey := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	keys := "q quit · a add · enter view · c done · x del · ^ pin · i idea · / find · p project · O/F tag · , menu · s sync"
+	homeHint := accentKey.Render("h home/clear")
+	if m.homeFlash {
+		homeHint = lipgloss.NewStyle().Background(brandRed).Foreground(brightColor).Bold(true).Render(" h home/clear ")
+	}
+	right := accentKey.Render("H help") + helpStyle.Render(" · ") + homeHint +
+		helpStyle.Render(" · " + keys)
 	gap := m.width - lipgloss.Width(statusLine) - lipgloss.Width(right)
 	if gap < 1 {
 		return lipgloss.JoinVertical(lipgloss.Left, statusLine, right)

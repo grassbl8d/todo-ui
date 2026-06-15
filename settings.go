@@ -12,10 +12,11 @@ type Settings struct {
 	FollowupLabel string `json:"followup_label"` // label the `f` view filters on (no @)
 	SyncSeconds   int    `json:"sync_seconds"`   // background auto-sync interval; 0 = off
 	Light         bool   `json:"light"`          // light theme (false = dark, the default)
+	DateFormat    string `json:"date_format"`    // MDY (default), YMD, or DMY
 }
 
 func defaultSettings() Settings {
-	return Settings{OngoingLabel: "ongoing", FollowupLabel: "ffup", SyncSeconds: 300}
+	return Settings{OngoingLabel: "ongoing", FollowupLabel: "ffup", SyncSeconds: 300, DateFormat: "MDY"}
 }
 
 func settingsPath() string {
@@ -54,6 +55,9 @@ func LoadSettings() Settings {
 	}
 	if s.SyncSeconds < 0 {
 		s.SyncSeconds = 0
+	}
+	if s.DateFormat != "YMD" && s.DateFormat != "DMY" {
+		s.DateFormat = "MDY"
 	}
 	return s
 }
