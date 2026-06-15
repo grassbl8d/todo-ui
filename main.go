@@ -19,35 +19,74 @@ import (
 // -ldflags "-X main.version=vX.Y.Z". Bump this when cutting a new version.
 var version = "v0.1.1"
 
-// ---------- styling ----------
+// ---------- theming (light / dark) ----------
 
+// Theme holds every colour the UI uses, so we can swap light/dark at runtime.
+type Theme struct {
+	Accent, Dim, Sub        lipgloss.Color
+	Text, Bright            lipgloss.Color
+	P1, P2, P3, P4          lipgloss.Color
+	Project, Due, Deadline  lipgloss.Color
+	Labels, Warn            lipgloss.Color
+	TitleFg, TitleBg        lipgloss.Color
+}
+
+var darkTheme = Theme{
+	Accent: "#E44332", Dim: "#6C6C6C", Sub: "#9A9A9A",
+	Text: "#DDDDDD", Bright: "#FFFFFF",
+	P1: "#E44332", P2: "#EB8909", P3: "#246FE0", P4: "#808080",
+	Project: "#8AB4F8", Due: "#E5C07B", Deadline: "#E06C75",
+	Labels: "#98C379", Warn: "#EB8909",
+	TitleFg: "#FFFFFF", TitleBg: "#E44332",
+}
+
+var lightTheme = Theme{
+	Accent: "#C5341F", Dim: "#6B7280", Sub: "#4B5563",
+	Text: "#1F2937", Bright: "#000000",
+	P1: "#C5341F", P2: "#B45309", P3: "#1D4ED8", P4: "#6B7280",
+	Project: "#1D4ED8", Due: "#B45309", Deadline: "#B91C1C",
+	Labels: "#15803D", Warn: "#B45309",
+	TitleFg: "#FFFFFF", TitleBg: "#E44332",
+}
+
+// Active palette (set by applyTheme) used throughout the views.
 var (
-	brandRed = lipgloss.Color("#E44332")
-	dimColor = lipgloss.Color("#6C6C6C")
-	subColor = lipgloss.Color("#9A9A9A")
+	th            Theme
+	brandRed      lipgloss.Color
+	dimColor      lipgloss.Color
+	subColor      lipgloss.Color
+	textColor     lipgloss.Color
+	brightColor   lipgloss.Color
+	projectColor  lipgloss.Color
+	dueColor      lipgloss.Color
+	deadlineColor lipgloss.Color
+	labelColor    lipgloss.Color
+	warnColor     lipgloss.Color
+	prioColors    map[string]lipgloss.Color
 
-	prioColors = map[string]lipgloss.Color{
-		"p1": lipgloss.Color("#E44332"),
-		"p2": lipgloss.Color("#EB8909"),
-		"p3": lipgloss.Color("#246FE0"),
-		"p4": lipgloss.Color("#808080"),
-	}
-
-	titleBarStyle = lipgloss.NewStyle().
-			Background(brandRed).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Bold(true).
-			Padding(0, 1)
-
-	statusStyle = lipgloss.NewStyle().Foreground(subColor).Padding(0, 1)
-	errStyle    = lipgloss.NewStyle().Foreground(brandRed).Bold(true).Padding(0, 1)
-	helpStyle   = lipgloss.NewStyle().Foreground(dimColor).Padding(0, 1)
-
-	promptBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(brandRed).
-			Padding(0, 1)
+	titleBarStyle lipgloss.Style
+	statusStyle   lipgloss.Style
+	errStyle      lipgloss.Style
+	helpStyle     lipgloss.Style
+	promptBox     lipgloss.Style
 )
+
+// applyTheme makes t the active palette and rebuilds the shared styles.
+func applyTheme(t Theme) {
+	th = t
+	brandRed, dimColor, subColor = t.Accent, t.Dim, t.Sub
+	textColor, brightColor = t.Text, t.Bright
+	projectColor, dueColor, deadlineColor = t.Project, t.Due, t.Deadline
+	labelColor, warnColor = t.Labels, t.Warn
+	prioColors = map[string]lipgloss.Color{"p1": t.P1, "p2": t.P2, "p3": t.P3, "p4": t.P4}
+	titleBarStyle = lipgloss.NewStyle().Background(t.TitleBg).Foreground(t.TitleFg).Bold(true).Padding(0, 1)
+	statusStyle = lipgloss.NewStyle().Foreground(t.Sub).Padding(0, 1)
+	errStyle = lipgloss.NewStyle().Foreground(t.Accent).Bold(true).Padding(0, 1)
+	helpStyle = lipgloss.NewStyle().Foreground(t.Dim).Padding(0, 1)
+	promptBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Accent).Padding(0, 1)
+}
+
+func init() { applyTheme(darkTheme) } // sensible default before settings load
 
 // ---------- list item ----------
 
@@ -77,10 +116,10 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	}
 
 	marker := "  "
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#DDDDDD"))
+	titleStyle := lipgloss.NewStyle().Foreground(textColor)
 	if selected {
 		marker = lipgloss.NewStyle().Foreground(pc).Bold(true).Render("▌ ")
-		titleStyle = titleStyle.Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+		titleStyle = titleStyle.Foreground(brightColor).Bold(true)
 	}
 
 	prio := lipgloss.NewStyle().Foreground(pc).Bold(true).Render(t.Priority)
@@ -88,16 +127,16 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	// meta line: #project · due · @labels
 	var meta []string
 	if t.Project != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8")).Render(t.Project))
+		meta = append(meta, lipgloss.NewStyle().Foreground(projectColor).Render(t.Project))
 	}
 	if strings.TrimSpace(t.DueDate) != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render(t.DueDate))
+		meta = append(meta, lipgloss.NewStyle().Foreground(dueColor).Render(t.DueDate))
 	}
 	if strings.TrimSpace(t.Deadline) != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(lipgloss.Color("#E06C75")).Render("⚑ "+t.Deadline))
+		meta = append(meta, lipgloss.NewStyle().Foreground(deadlineColor).Render("⚑ "+t.Deadline))
 	}
 	if strings.TrimSpace(t.Labels) != "" {
-		meta = append(meta, lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Render(t.Labels))
+		meta = append(meta, lipgloss.NewStyle().Foreground(labelColor).Render(t.Labels))
 	}
 	metaLine := lipgloss.NewStyle().Foreground(subColor).Render(strings.Join(meta, "  ·  "))
 
@@ -129,12 +168,6 @@ func (i projItem) FilterValue() string {
 	return i.p.Name
 }
 
-// colors for the picker
-var (
-	projColor   = lipgloss.Color("#8AB4F8") // normal projects (blue)
-	recentColor = lipgloss.Color("#E5C07B") // recent projects (gold)
-)
-
 type projDelegate struct{}
 
 func (d projDelegate) Height() int                         { return 1 }
@@ -156,17 +189,17 @@ func (d projDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	text := it.p.Name
 	switch it.kind {
 	case kindRecent:
-		base = recentColor
+		base = dueColor
 		prefix = "★ "
 	case kindAllProjects:
-		base = recentColor
+		base = dueColor
 	default:
-		base = projColor
+		base = projectColor
 	}
 	style := lipgloss.NewStyle().Foreground(base)
 	if selected {
 		prefix = lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("▸ ")
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+		style = lipgloss.NewStyle().Foreground(brightColor).Bold(true)
 	}
 	fmt.Fprintf(w, "%s%s", prefix, style.Render(text))
 }
@@ -191,7 +224,8 @@ const (
 	modeClearData    // confirm clearing token + cache + queue
 	modeOptions      // settings page
 	modeOptionsEdit  // editing one setting
-	modeOnlineSearch // online Todoist filter query (-)
+	modeOnlineSearch // online Todoist filter query (?)
+	modeCommand      // ":" command line (e.g. :unpin)
 )
 
 // editField is which task field the detail editor is changing.
@@ -291,6 +325,7 @@ type model struct {
 	settings     Settings   // user preferences (ongoing label, sync interval)
 	tickGen      int        // generation guard for the auto-sync ticker
 	optCursor    int        // selected row on the options page
+	pinnedID     string     // when set, only this task is shown (focus mode)
 	helpOffset   int        // scroll offset of the help page
 	addProject   Project    // project chosen for the task currently being added
 	recents      []Project  // recently-chosen projects, most recent first (persisted)
@@ -357,11 +392,21 @@ func initialModel() model {
 		settings: LoadSettings(),
 		status:   "ready",
 	}
+	m.applyThemeFromSettings()
 	m.deriveAll()
 	if !HasToken() {
 		m.beginOnboard("Welcome! Paste your Todoist API token to get started.")
 	}
 	return m
+}
+
+// applyThemeFromSettings selects light or dark per the saved preference.
+func (m *model) applyThemeFromSettings() {
+	if m.settings.Light {
+		applyTheme(lightTheme)
+	} else {
+		applyTheme(darkTheme)
+	}
 }
 
 // beginOnboard switches to the token-entry screen.
@@ -503,6 +548,7 @@ func (m *model) completeTask(id, content string) {
 		m.cache.Items[id] = it
 	}
 	m.enqueue(Command{Type: "item_complete", UUID: genID(), Args: map[string]any{"id": id}})
+	m.unpinIfMatches(id)
 	m.deriveAll()
 	m.status = "completed: " + content
 }
@@ -510,8 +556,16 @@ func (m *model) completeTask(id, content string) {
 func (m *model) deleteTask(id, content string) {
 	delete(m.cache.Items, id)
 	m.enqueue(Command{Type: "item_delete", UUID: genID(), Args: map[string]any{"id": id}})
+	m.unpinIfMatches(id)
 	m.deriveAll()
 	m.status = "deleted: " + content
+}
+
+// unpinIfMatches releases the pin when the pinned task is finished/removed.
+func (m *model) unpinIfMatches(id string) {
+	if m.pinnedID == id {
+		m.pinnedID = ""
+	}
 }
 
 // updateItem mutates the cached item, queues an item_update, and refreshes.
@@ -616,6 +670,18 @@ func (m *model) selectedTask() (Task, bool) {
 // applyView rebuilds the visible list from allTasks, narrowed by the local
 // text query (case-insensitive substring over content, project and labels).
 func (m *model) applyView() {
+	// Pin (focus) mode overrides everything: show only the pinned task.
+	if m.pinnedID != "" {
+		var items []list.Item
+		for _, t := range m.allTasks {
+			if t.ID == m.pinnedID {
+				items = append(items, taskItem{t})
+				break
+			}
+		}
+		m.list.SetItems(items)
+		return
+	}
 	if m.onlineView {
 		items := make([]list.Item, len(m.onlineResults))
 		for i, t := range m.onlineResults {
@@ -952,6 +1018,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOptionsEdit(msg)
 		case modeOnlineSearch:
 			return m.updateOnlineSearch(msg)
+		case modeCommand:
+			return m.updateCommand(msg)
 		}
 	}
 
@@ -962,9 +1030,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// While pinned (focus mode), block view-switching to keep you on one task.
+	if m.pinnedID != "" {
+		switch msg.String() {
+		case "a", "A", "p", "!", "o", "f", "t", "T", "d", "D", "R",
+			"/", "?", "O", "b", "h", "1", "2", "3", "4", "5", "6", "0":
+			m.status = "📌 pinned — type :unpin (then Enter) to switch tasks"
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "*":
+		m.settings.Light = !m.settings.Light
+		m.settings.Save()
+		m.applyThemeFromSettings()
+		if m.settings.Light {
+			m.status = "light theme"
+		} else {
+			m.status = "dark theme"
+		}
+		return m, nil
+	case ":":
+		m.mode = modeCommand
+		m.err = ""
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = "unpin"
+		m.input.SetValue("")
+		m.input.CursorEnd()
+		m.input.Focus()
+		return m, textinput.Blink
+	case "P":
+		// Pin the selected task — focus mode for this session (only this task shows).
+		if t, ok := m.selectedTask(); ok {
+			m.pinnedID = t.ID
+			m.applyView()
+			m.status = "📌 pinned: " + t.Content
+		}
+		return m, nil
 	case "a":
 		// If already viewing a project, add straight into it.
 		if m.projectView != "" {
@@ -1086,7 +1190,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applyView()
 		m.status = fmt.Sprintf("recently added — %d", len(m.list.Items()))
 		return m, nil
-	case "P":
+	case "!":
 		// Filter by priority — open the priority picker.
 		m.mode = modePriorityPick
 		m.err = ""
@@ -1407,6 +1511,17 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "b", "q", "enter":
 		m.mode = modeList
 		return m, nil
+	case "h":
+		// Home — close detail and go to the home view.
+		m.mode = modeList
+		return m, m.commit(viewState{})
+	case ":":
+		m.mode = modeCommand
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = "unpin"
+		m.input.SetValue("")
+		m.input.Focus()
+		return m, textinput.Blink
 	case "c":
 		m.mode = modeList
 		m.completeTask(m.detailID, m.detailTask.Content)
@@ -1507,6 +1622,43 @@ func (m model) updateClearData(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		return m, nil
 	}
+}
+
+func (m model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		cmd := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(m.input.Value()), ":")))
+		m.mode = modeList
+		m.input.Blur()
+		switch cmd {
+		case "unpin", "unpin task", "u":
+			if m.pinnedID != "" {
+				m.pinnedID = ""
+				m.applyView()
+				m.status = "unpinned — all tasks are back"
+			} else {
+				m.status = "nothing is pinned"
+			}
+		case "pin":
+			if t, ok := m.selectedTask(); ok {
+				m.pinnedID = t.ID
+				m.applyView()
+				m.status = "📌 pinned: " + t.Content
+			}
+		case "":
+			// no-op
+		default:
+			m.status = "unknown command: :" + cmd
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
 }
 
 func (m model) updateOnlineSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1695,7 +1847,9 @@ func (m model) View() string {
 
 	title := titleBarStyle.Render("✓ Todoist")
 	scope := "  all tasks"
-	if m.onlineView {
+	if m.pinnedID != "" {
+		scope = "  📌 pinned"
+	} else if m.onlineView {
 		scope = "  online: " + m.onlineQuery
 	} else if m.recentView {
 		scope = "  recently added"
@@ -1762,6 +1916,9 @@ func (m model) View() string {
 	}
 
 	if m.mode == modeDetail || m.mode == modeDetailEdit || m.mode == modeCommentAdd {
+		if b := m.pinBanner(); b != "" {
+			return lipgloss.JoinVertical(lipgloss.Left, header, b, m.detailView())
+		}
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.detailView())
 	}
 
@@ -1794,7 +1951,7 @@ func (m model) View() string {
 			dim.Render("You'll be asked for your token again to reconnect."),
 		}
 		if n := len(m.queue); n > 0 {
-			rows = append(rows, "", lipgloss.NewStyle().Foreground(lipgloss.Color("#EB8909")).
+			rows = append(rows, "", lipgloss.NewStyle().Foreground(warnColor).
 				Render(fmt.Sprintf("⚠ %d unsynced change(s) will be LOST — press n, then s to sync first.", n)))
 		}
 		rows = append(rows, "", accent.Render("y")+dim.Render(" clear everything    ")+accent.Render("n")+dim.Render(" cancel"))
@@ -1809,7 +1966,7 @@ func (m model) View() string {
 		for i, o := range priorityOptions {
 			pc := prioColors[o.val]
 			if pc == "" {
-				pc = lipgloss.Color("#DDDDDD")
+				pc = textColor
 			}
 			cur := "   "
 			st := lipgloss.NewStyle().Foreground(pc)
@@ -1832,7 +1989,7 @@ func (m model) View() string {
 		}
 		line := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(prompt)
 		if m.projQuery != "" {
-			line += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B")).Render("filter: "+m.projQuery+"▌")
+			line += "  " + lipgloss.NewStyle().Foreground(dueColor).Render("filter: "+m.projQuery+"▌")
 		}
 		hint := line
 		help := helpStyle.Render("type to filter · ↑/↓ move · enter select · esc clear/cancel")
@@ -1852,27 +2009,52 @@ func (m model) View() string {
 	case modeOnlineSearch:
 		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("Todoist search (online)  ")
 		body = promptBox.Render(label + m.input.View())
+	case modeCommand:
+		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(": ")
+		body = promptBox.Render(label + m.input.View() + lipgloss.NewStyle().Foreground(subColor).Render("   (try: unpin)"))
 	}
 
 	footer := m.footer()
+	banner := m.pinBanner()
 
-	if body != "" {
-		// Shrink the list so the prompt box doesn't push content off the top.
-		h := m.height - lipgloss.Height(header) - lipgloss.Height(body) - lipgloss.Height(footer)
-		if h < 3 {
-			h = 3
-		}
-		m.list.SetHeight(h)
-		return lipgloss.JoinVertical(lipgloss.Left, header, body, m.list.View(), footer)
+	// Assemble: header, optional pin banner, optional prompt body, list, footer.
+	parts := []string{header}
+	used := lipgloss.Height(header) + lipgloss.Height(footer)
+	if banner != "" {
+		parts = append(parts, banner)
+		used += lipgloss.Height(banner)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, m.list.View(), footer)
+	if body != "" {
+		parts = append(parts, body)
+		used += lipgloss.Height(body)
+	}
+	h := m.height - used
+	if h < 3 {
+		h = 3
+	}
+	m.list.SetHeight(h)
+	parts = append(parts, m.list.View(), footer)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// pinBanner is the prominent "you are pinned" notice with the unpin instruction.
+func (m model) pinBanner() string {
+	if m.pinnedID == "" {
+		return ""
+	}
+	pin := lipgloss.NewStyle().Background(brandRed).Foreground(brightColor).Bold(true).Render(" 📌 PINNED ")
+	tip := lipgloss.NewStyle().Foreground(dueColor).Render("focusing on one task")
+	how := lipgloss.NewStyle().Foreground(subColor).Render("— type ") +
+		lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(":unpin") +
+		lipgloss.NewStyle().Foreground(subColor).Render(" then Enter to release")
+	return " " + pin + "  " + tip + " " + how
 }
 
 // optionsView renders the settings page.
 func (m model) optionsView(header string) string {
 	accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(subColor)
-	val := lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))
+	val := lipgloss.NewStyle().Foreground(projectColor)
 	rows := m.optionRows()
 
 	lines := []string{"", "  " + accent.Render("Options"), ""}
@@ -1881,7 +2063,7 @@ func (m model) optionsView(header string) string {
 		name := dim.Render(fmt.Sprintf("%-22s", r.label))
 		if i == m.optCursor && m.mode == modeOptions {
 			cur = accent.Render(" ▸ ")
-			name = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Render(fmt.Sprintf("%-22s", r.label))
+			name = lipgloss.NewStyle().Foreground(brightColor).Bold(true).Render(fmt.Sprintf("%-22s", r.label))
 		}
 		lines = append(lines, cur+name+val.Render(r.value))
 	}
@@ -1945,23 +2127,23 @@ func (m model) detailView() string {
 		}
 		return "  " + label.Render(fmt.Sprintf("%-10s", name)) + valStyle.Render(val)
 	}
-	title := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Render(t.Content)
+	title := lipgloss.NewStyle().Foreground(brightColor).Bold(true).Render(t.Content)
 
 	lines := []string{
 		"",
 		"  " + title,
 		"",
 		field("Priority", t.Priority, lipgloss.NewStyle().Foreground(pc).Bold(true)),
-		field("Due", t.DueDate, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B"))),
-		field("Deadline", t.Deadline, lipgloss.NewStyle().Foreground(lipgloss.Color("#E06C75"))),
-		field("Project", t.Project, lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))),
-		field("Labels", t.Labels, lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379"))),
+		field("Due", t.DueDate, lipgloss.NewStyle().Foreground(dueColor)),
+		field("Deadline", t.Deadline, lipgloss.NewStyle().Foreground(deadlineColor)),
+		field("Project", t.Project, lipgloss.NewStyle().Foreground(projectColor)),
+		field("Labels", t.Labels, lipgloss.NewStyle().Foreground(labelColor)),
 		field("ID", t.ID, label),
 		"",
 	}
 
 	// Comments section.
-	head := lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8")).Bold(true)
+	head := lipgloss.NewStyle().Foreground(projectColor).Bold(true)
 	count := ""
 	if m.commentErr == "" {
 		count = fmt.Sprintf(" (%d)", len(m.comments))
@@ -1976,7 +2158,7 @@ func (m model) detailView() string {
 		for _, c := range m.comments {
 			when := lipgloss.NewStyle().Foreground(subColor).Render(shortTime(c.PostedAt))
 			body := strings.ReplaceAll(strings.TrimSpace(c.Content), "\n", " ")
-			lines = append(lines, "  "+lipgloss.NewStyle().Foreground(brandRed).Render("• ")+when+"  "+lipgloss.NewStyle().Foreground(lipgloss.Color("#DDDDDD")).Render(body))
+			lines = append(lines, "  "+lipgloss.NewStyle().Foreground(brandRed).Render("• ")+when+"  "+lipgloss.NewStyle().Foreground(textColor).Render(body))
 		}
 	}
 	lines = append(lines, "")
@@ -2016,7 +2198,7 @@ func (m model) detailView() string {
 // helpLines returns the full help content as individual lines (for scrolling).
 func helpLines() []string {
 	key := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
-	head := lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8")).Bold(true)
+	head := lipgloss.NewStyle().Foreground(projectColor).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(subColor)
 
 	row := func(k, desc string) string {
@@ -2055,7 +2237,10 @@ func helpLines() []string {
 		"",
 		head.Render("  Views & filters"),
 		row("p", "View by project (pick from the list; “↩ All Projects” to reset)"),
-		row("P", "Filter by priority (pick p1–p4 from the menu)"),
+		row("P", "Pin — focus on one task; only it shows (this session)"),
+		row(":unpin", "Release the pin (type : then unpin, Enter)"),
+		row("*", "Toggle light / dark theme"),
+		row("!", "Filter by priority (pick p1–p4 from the menu)"),
 		row("o", "Ongoing — tasks with your ongoing label (set in Options)"),
 		row("f", "Follow-up — tasks with your follow-up label (set in Options)"),
 		row("t", "Due today (only)"),
@@ -2178,10 +2363,10 @@ func (m model) footer() string {
 	}
 	var badges []string
 	if n := len(m.queue); n > 0 {
-		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("#EB8909")).Render(fmt.Sprintf("●%d unsynced", n)))
+		badges = append(badges, lipgloss.NewStyle().Foreground(warnColor).Render(fmt.Sprintf("●%d unsynced", n)))
 	}
 	if m.online {
-		badges = append(badges, lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Render("online"))
+		badges = append(badges, lipgloss.NewStyle().Foreground(labelColor).Render("online"))
 	}
 	statusLine := statusStyle.Render(st)
 	if len(badges) > 0 {
@@ -2191,7 +2376,7 @@ func (m model) footer() string {
 		statusLine = errStyle.Render("⚠ " + m.err)
 	}
 
-	keys := "a add · enter view · c done · x del · / find · ? online · p project · t today · o ongoing · f follow-up · O options · s sync · H help · q quit"
+	keys := "a add · enter view · c done · x del · P pin · / find · p project · t today · o ongoing · f follow-up · O options · s sync · H help · q quit"
 	right := helpStyle.Render(keys)
 	gap := m.width - lipgloss.Width(statusLine) - lipgloss.Width(right)
 	if gap < 1 {

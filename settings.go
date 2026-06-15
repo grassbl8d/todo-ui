@@ -11,6 +11,7 @@ type Settings struct {
 	OngoingLabel  string `json:"ongoing_label"`  // label the `o` view filters on (no @)
 	FollowupLabel string `json:"followup_label"` // label the `f` view filters on (no @)
 	SyncSeconds   int    `json:"sync_seconds"`   // background auto-sync interval; 0 = off
+	Light         bool   `json:"light"`          // light theme (false = dark, the default)
 }
 
 func defaultSettings() Settings {

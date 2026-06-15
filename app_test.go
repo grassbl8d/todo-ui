@@ -7,6 +7,19 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// newTestModel builds a model with persisted state (pin/recents/cache) neutralized
+// so tests are deterministic regardless of the dev machine's ~/.config/todo-ui.
+func newTestModel() model {
+	m := initialModel()
+	m.pinnedID = ""
+	m.recents = nil
+	m.cache = newCache()
+	m.queue = nil
+	m.mode = modeList
+	m.detailID = ""
+	return m
+}
+
 func TestToTaskPriorityInversion(t *testing.T) {
 	c := newCache()
 	c.Projects["pr"] = apiProject{ID: "pr", Name: "Bills"}
@@ -94,7 +107,7 @@ func sampleTasks() []Task {
 }
 
 func TestTasksLoadedPopulatesList(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 
@@ -109,7 +122,7 @@ func TestTasksLoadedPopulatesList(t *testing.T) {
 }
 
 func TestKeyOpensProjectPicker(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if nm.(model).mode != modeProjectPick {
@@ -129,7 +142,7 @@ func selectProjItem(m *model, name string) {
 }
 
 func TestProjectPickThenAdd(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.recents = nil // deterministic: ignore any persisted recents
 	m.width, m.height = 100, 40
 	m.projList.SetSize(100, 36)
@@ -161,7 +174,7 @@ func TestProjectPickThenAdd(t *testing.T) {
 }
 
 func TestAddToLastProjectShortcut(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.recents = []Project{{ID: "p9", Name: "#Work"}}
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
@@ -175,7 +188,7 @@ func TestAddToLastProjectShortcut(t *testing.T) {
 }
 
 func TestKeyOpensSearchMode(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	if nm.(model).mode != modeSearch {
@@ -184,7 +197,7 @@ func TestKeyOpensSearchMode(t *testing.T) {
 }
 
 func TestSearchEnterSetsFilter(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	// enter search mode
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
@@ -224,7 +237,7 @@ func TestIsFilterExpr(t *testing.T) {
 }
 
 func TestLocalTextSearchFiltersTasks(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	tasks := []Task{
@@ -269,7 +282,7 @@ func TestLocalTextSearchFiltersTasks(t *testing.T) {
 }
 
 func TestViewByProject(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.recents = nil // deterministic
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
@@ -345,7 +358,7 @@ func TestViewByProject(t *testing.T) {
 }
 
 func TestBackAndHomeNavigation(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.recents = nil
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
@@ -410,7 +423,7 @@ func TestBackAndHomeNavigation(t *testing.T) {
 }
 
 func TestProjectPickerTypeToFilter(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.recents = nil
 	m.width, m.height = 100, 40
 	m.projList.SetSize(100, 36)
@@ -449,7 +462,7 @@ func TestProjectPickerTypeToFilter(t *testing.T) {
 }
 
 func TestClearDataDialogCancel(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
 	m = nm.(model)
@@ -467,7 +480,7 @@ func TestClearDataDialogCancel(t *testing.T) {
 }
 
 func TestAddWhileViewingProjectSkipsPicker(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.recents = nil
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
@@ -496,8 +509,92 @@ func TestAddWhileViewingProjectSkipsPicker(t *testing.T) {
 	}
 }
 
+func TestThemeToggle(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	start := m.settings.Light
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("*")})
+	m = nm.(model)
+	if m.settings.Light == start {
+		t.Fatal("* should toggle the light/dark setting")
+	}
+	// applyTheme should have switched the active palette
+	if m.settings.Light && brandRed != lightTheme.Accent {
+		t.Fatal("light theme not applied")
+	}
+	if !m.settings.Light && brandRed != darkTheme.Accent {
+		t.Fatal("dark theme not applied")
+	}
+	// restore dark for other tests
+	applyTheme(darkTheme)
+}
+
+func TestPinFocusAndUnpin(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
+		{ID: "1", Content: "focus task"},
+		{ID: "2", Content: "other a"},
+		{ID: "3", Content: "other b"},
+	}})
+	m = nm.(model)
+	// select the 2nd task, then pin it
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	m = nm.(model)
+	if m.pinnedID != "2" {
+		t.Fatalf("P should pin the selected task, got %q", m.pinnedID)
+	}
+	if len(m.list.Items()) != 1 {
+		t.Fatalf("pinned: only 1 task should show, got %d", len(m.list.Items()))
+	}
+	// view-switching is blocked while pinned
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m = nm.(model)
+	if m.filter != "" || len(m.list.Items()) != 1 {
+		t.Fatal("view-switch keys should be blocked while pinned")
+	}
+	// banner is shown
+	if !strings.Contains(m.View(), "PINNED") {
+		t.Fatal("pin banner should be visible")
+	}
+	// :unpin releases
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+	m = nm.(model)
+	if m.mode != modeCommand {
+		t.Fatal(": should open the command line")
+	}
+	for _, r := range "unpin" {
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = nm.(model)
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.pinnedID != "" {
+		t.Fatal(":unpin should clear the pin")
+	}
+	if len(m.list.Items()) != 3 {
+		t.Fatalf("after unpin all 3 tasks should show, got %d", len(m.list.Items()))
+	}
+}
+
+func TestCompletingPinnedAutoUnpins(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "focus", Priority: 1}
+	m.pinnedID = "1"
+	m.deriveAll()
+	m.completeTask("1", "focus")
+	if m.pinnedID != "" {
+		t.Fatal("completing the pinned task should auto-unpin")
+	}
+}
+
 func TestOnlineSearchResults(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.cache = newCache()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
@@ -528,7 +625,7 @@ func TestOnlineSearchResults(t *testing.T) {
 }
 
 func TestOptionsPageOpens(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("O")})
 	m = nm.(model)
@@ -549,7 +646,7 @@ func TestOptionsPageOpens(t *testing.T) {
 }
 
 func TestTokenCheckedValidLeavesOnboard(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.cache = newCache()
 	m.width, m.height = 100, 40
 	m.mode = modeOnboard
@@ -568,7 +665,7 @@ func TestTokenCheckedValidLeavesOnboard(t *testing.T) {
 }
 
 func TestTokenCheckedAuthErrStaysOnboard(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.cache = newCache()
 	m.width, m.height = 100, 40
 	m.mode = modeList
@@ -579,7 +676,7 @@ func TestTokenCheckedAuthErrStaysOnboard(t *testing.T) {
 }
 
 func TestHelpPageToggle(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
@@ -598,7 +695,7 @@ func TestHelpPageToggle(t *testing.T) {
 }
 
 func TestHelpScrolling(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 80, 12 // short terminal → content overflows
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
 	m = nm.(model)
@@ -631,7 +728,7 @@ func TestHelpScrolling(t *testing.T) {
 }
 
 func TestEnterOpensDetail(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
@@ -669,7 +766,7 @@ func TestEnterOpensDetail(t *testing.T) {
 }
 
 func TestOngoingFilter(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
@@ -692,7 +789,7 @@ func TestOngoingFilter(t *testing.T) {
 }
 
 func TestPriorityFilter(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
@@ -701,11 +798,11 @@ func TestPriorityFilter(t *testing.T) {
 		{ID: "3", Priority: "p1", Content: "urgent 2"},
 	}})
 	m = nm.(model)
-	// open priority picker
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	// open priority picker (now on '!')
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
 	m = nm.(model)
 	if m.mode != modePriorityPick {
-		t.Fatal("P should open the priority picker")
+		t.Fatal("! should open the priority picker")
 	}
 	// pick p1 directly
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
@@ -720,7 +817,7 @@ func TestPriorityFilter(t *testing.T) {
 		t.Fatalf("want 2 p1 tasks, got %d", len(m.list.Items()))
 	}
 	// reopen and choose All priorities (0) to clear
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
 	m = nm.(model)
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("0")})
 	m = nm.(model)
@@ -733,7 +830,7 @@ func TestPriorityFilter(t *testing.T) {
 }
 
 func TestSortByPriority(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
@@ -760,7 +857,7 @@ func TestSortByPriority(t *testing.T) {
 }
 
 func TestDeleteConfirmFlow(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: sampleTasks()})
@@ -780,7 +877,7 @@ func TestDeleteConfirmFlow(t *testing.T) {
 
 func TestDeadlineAndTodayFilters(t *testing.T) {
 	today := todayStr()
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
@@ -824,7 +921,7 @@ func TestDeadlineAndTodayFilters(t *testing.T) {
 }
 
 func TestVersionShownInHeader(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.list.SetSize(120, 36)
 	if !strings.Contains(m.View(), "todo-ui "+version) {
@@ -833,7 +930,7 @@ func TestVersionShownInHeader(t *testing.T) {
 }
 
 func TestViewRendersWithoutPanic(t *testing.T) {
-	m := initialModel()
+	m := newTestModel()
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	nm, _ := m.Update(tasksLoadedMsg{tasks: sampleTasks()})

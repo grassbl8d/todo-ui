@@ -136,7 +136,9 @@ entirely from the keyboard.
 | `c`             | Complete the selected task                                   |
 | `x`             | Delete the selected task (asks first)                        |
 | `p`             | **View by project** — pick a project to filter the list      |
-| `P`             | **Filter by priority** — pick p1–p4 from a menu              |
+| `P`             | **Pin (focus)** — show only the selected task; `:unpin` to release |
+| `!`             | **Filter by priority** — pick p1–p4 from a menu              |
+| `*`             | **Toggle light / dark theme**                                |
 | `o`             | **Ongoing** — tasks with your ongoing label (default `@ongoing`) |
 | `f`             | **Follow-up** — tasks with your follow-up label (default `@ffup`) |
 | `t`             | **Due today** (only)                                        |
@@ -200,6 +202,20 @@ Press `Esc` (or `h`) to clear and return to all tasks.
 
 `o` (ongoing) and `f` (follow-up) show tasks carrying a label you choose in **Options**
 (`O`). Defaults: `@ongoing` and `@ffup`.
+
+### Pin / focus mode (for single-tasking)
+
+Press **`P`** to pin the selected task. While pinned, todo-ui shows **only that task** and
+blocks view-switching keys, so you can't wander off — handy for avoiding constant task
+switching. A bright **📌 PINNED** banner is always visible with the release instructions.
+To unpin, type **`:`** then **`unpin`** and Enter. Completing or deleting the pinned task
+auto-unpins. The pin is **per-session** — it only affects the todo-ui instance you set it
+in, so you can run several at once.
+
+### Theme
+
+Press **`*`** to toggle between **dark** (default) and **light** themes; the choice is
+saved.
 
 ### Add syntax (natural language)
 
