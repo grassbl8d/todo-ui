@@ -137,6 +137,7 @@ entirely from the keyboard.
 | `p`             | **View by project** — pick a project to filter the list      |
 | `P`             | **Filter by priority** — pick p1–p4 from a menu              |
 | `o`             | **Ongoing** — show all tasks tagged `@ongoing`               |
+| `R`             | **Recently added** — the last 10 tasks you created           |
 | `/`             | Search — plain words (local text search) or a Todoist filter |
 | `1`–`5`         | **Sort** by priority / due / project / name / labels (`0` = default; repeat to reverse) |
 | `b`             | **Back** — return to the previous view (like a browser)      |
@@ -156,15 +157,21 @@ Opens a detail screen for the selected task. From there:
 | `t`       | Set / change the due date (natural language) |
 | `l`       | Edit labels (comma-separated, without `@`) |
 | `e`       | Edit the task name                       |
+| `m`       | Add a comment (existing comments are listed above) |
 | `c`       | Complete the task                        |
 | `b` / `Esc` | Back to the list                      |
+
+Comments are fetched and posted via Todoist's REST API (the `todoist` CLI has no
+comment support). todoui reuses the API token the CLI already stored at
+`~/.config/todoist/config.json`.
 
 > Note: the underlying `todoist modify` always re-applies a priority, so todoui
 > carries the task's current priority on every edit to avoid silently resetting it.
 
 #### In the project picker (used by both `a` and `p`)
-Type to fuzzy-filter the list · `↑`/`↓` to move · `Enter` to select · `Esc` to cancel.
-The cursor starts on your last-used project.
+Your **3 most recently chosen projects** appear at the top (in gold, marked `★`),
+then a separator, then all projects (blue). The cursor starts on your most recent
+project. Type to fuzzy-filter · `↑`/`↓` to move · `Enter` to select · `Esc` to cancel.
 
 ### Searching
 

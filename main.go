@@ -102,9 +102,32 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 
 // ---------- project picker item ----------
 
-type projItem struct{ p Project }
+type projKind int
 
-func (i projItem) FilterValue() string { return i.p.Name }
+const (
+	kindProject     projKind = iota // a normal project
+	kindRecent                      // a recently-chosen project (shown at top)
+	kindSep                         // a non-selectable separator row
+	kindAllProjects                 // the "↩ All Projects" reset entry (view mode)
+)
+
+type projItem struct {
+	p    Project
+	kind projKind
+}
+
+func (i projItem) FilterValue() string {
+	if i.kind == kindSep {
+		return ""
+	}
+	return i.p.Name
+}
+
+// colors for the picker
+var (
+	projColor   = lipgloss.Color("#8AB4F8") // normal projects (blue)
+	recentColor = lipgloss.Color("#E5C07B") // recent projects (gold)
+)
 
 type projDelegate struct{}
 
@@ -116,13 +139,30 @@ func (d projDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	if !ok {
 		return
 	}
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))
-	cur := "  "
-	if index == m.Index() {
-		cur = lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("▸ ")
-		style = style.Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+	if it.kind == kindSep {
+		fmt.Fprint(w, lipgloss.NewStyle().Foreground(dimColor).Render("  ───────────── all projects ─────────────"))
+		return
 	}
-	fmt.Fprintf(w, "%s%s", cur, style.Render(it.p.Name))
+
+	selected := index == m.Index()
+	var base lipgloss.Color
+	prefix := "  "
+	text := it.p.Name
+	switch it.kind {
+	case kindRecent:
+		base = recentColor
+		prefix = "★ "
+	case kindAllProjects:
+		base = recentColor
+	default:
+		base = projColor
+	}
+	style := lipgloss.NewStyle().Foreground(base)
+	if selected {
+		prefix = lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("▸ ")
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+	}
+	fmt.Fprintf(w, "%s%s", prefix, style.Render(text))
 }
 
 // ---------- model ----------
@@ -138,6 +178,7 @@ const (
 	modeHelp
 	modeDetail       // viewing a single task
 	modeDetailEdit   // editing one field of the task in detail view
+	modeCommentAdd   // writing a new comment in the detail view
 	modePriorityPick // choosing a priority to filter by
 )
 
@@ -217,9 +258,14 @@ type model struct {
 	detailTask   Task       // task shown in the detail view
 	detailID     string     // id of the task in the detail view
 	editField    editField  // which field the detail editor is editing
+	comments     []Comment  // comments for the task in the detail view
+	commentsLoading bool    // comments are being fetched
+	commentErr   string     // error from the last comment fetch/post
+	recentView   bool       // showing the recently-added tasks
+	recentIDs    []string   // task IDs in recently-added order
 	helpOffset   int        // scroll offset of the help page
 	addProject  Project    // project chosen for the task currently being added
-	lastProject Project // most recently used project (remembered across runs)
+	recents     []Project // recently-chosen projects, most recent first (persisted)
 	status      string
 	err         string
 	width       int
@@ -233,6 +279,15 @@ type tasksLoadedMsg struct {
 	filter string
 }
 type projectsLoadedMsg struct{ projects []Project }
+type commentsLoadedMsg struct {
+	taskID   string
+	comments []Comment
+	err      error
+}
+type recentLoadedMsg struct {
+	ids []string
+	err error
+}
 type errMsg struct{ err error }
 type actionMsg struct{ status string }
 
@@ -262,7 +317,7 @@ func initialModel() model {
 		projList:    pl,
 		input:       ti,
 		mode:        modeList,
-		lastProject: LoadLastProject(),
+		recents:     LoadRecentProjects(),
 		loading:     true,
 		status:      "loading…",
 	}
@@ -366,6 +421,30 @@ func setContentCmd(id, content string, prio int) tea.Cmd {
 	}
 }
 
+func recentCmd(limit int) tea.Cmd {
+	return func() tea.Msg {
+		ids, err := RecentTaskIDs(limit)
+		return recentLoadedMsg{ids: ids, err: err}
+	}
+}
+
+func loadCommentsCmd(id string) tea.Cmd {
+	return func() tea.Msg {
+		cs, err := ListComments(id)
+		return commentsLoadedMsg{taskID: id, comments: cs, err: err}
+	}
+}
+
+func addCommentCmd(id, content string) tea.Cmd {
+	return func() tea.Msg {
+		if err := AddComment(id, content); err != nil {
+			return commentsLoadedMsg{taskID: id, err: err}
+		}
+		cs, err := ListComments(id) // refresh after posting
+		return commentsLoadedMsg{taskID: id, comments: cs, err: err}
+	}
+}
+
 func closeCmd(id, content string) tea.Cmd {
 	return func() tea.Msg {
 		if err := CloseTask(id); err != nil {
@@ -395,6 +474,20 @@ func (m *model) selectedTask() (Task, bool) {
 // applyView rebuilds the visible list from allTasks, narrowed by the local
 // text query (case-insensitive substring over content, project and labels).
 func (m *model) applyView() {
+	if m.recentView {
+		byID := make(map[string]Task, len(m.allTasks))
+		for _, t := range m.allTasks {
+			byID[t.ID] = t
+		}
+		var items []list.Item
+		for _, id := range m.recentIDs {
+			if t, ok := byID[id]; ok {
+				items = append(items, taskItem{t})
+			}
+		}
+		m.list.SetItems(items)
+		return
+	}
 	q := strings.ToLower(strings.TrimSpace(m.textQuery))
 	var matched []Task
 	for _, t := range m.allTasks {
@@ -476,6 +569,9 @@ func (m *model) sortTasks(ts []Task) {
 // scopeStatus describes the current view and its visible count.
 func (m *model) scopeStatus() string {
 	n := len(m.list.Items())
+	if m.recentView {
+		return fmt.Sprintf("recently added — %d", n)
+	}
 	if m.filter != "" {
 		return fmt.Sprintf("filter: %s — %d", m.filter, n)
 	}
@@ -498,6 +594,7 @@ func (m *model) scopeStatus() string {
 // applyState sets the working view variables and refreshes the list, reloading
 // from the server only when the needed server filter differs from what's loaded.
 func (m *model) applyState(s viewState) tea.Cmd {
+	m.recentView = false // any committed view leaves the recently-added view
 	m.filter, m.textQuery, m.projectView, m.priorityView = s.filter, s.textQuery, s.projectView, s.priorityView
 	if s.filter != m.loadedFilter {
 		m.loading = true
@@ -568,6 +665,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setPickerItems()
 		return m, nil
 
+	case commentsLoadedMsg:
+		if msg.taskID == m.detailID {
+			m.commentsLoading = false
+			if msg.err != nil {
+				m.commentErr = msg.err.Error()
+			} else {
+				m.comments = msg.comments
+				m.commentErr = ""
+			}
+		}
+		return m, nil
+
+	case recentLoadedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		m.recentView = true
+		m.recentIDs = msg.ids
+		m.applyView()
+		m.status = fmt.Sprintf("recently added — %d", len(m.list.Items()))
+		return m, nil
+
 	case tasksLoadedMsg:
 		m.loading = false
 		m.filter = msg.filter
@@ -618,6 +740,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDetail(msg)
 		case modeDetailEdit:
 			return m.updateDetailEdit(msg)
+		case modeCommentAdd:
+			return m.updateCommentAdd(msg)
 		case modePriorityPick:
 			return m.updatePriorityPick(msg)
 		}
@@ -650,15 +774,15 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectLastProject()
 		return m, nil
 	case "A":
-		// Fast path: add straight to the last-used project, skipping the picker.
-		if m.lastProject.ID == "" {
+		// Fast path: add straight to the most recent project, skipping the picker.
+		if len(m.recents) == 0 {
 			m.mode = modeProjectPick
 			m.pickIntent = pickAdd
 			m.setPickerItems()
 			m.selectLastProject()
 			return m, nil
 		}
-		m.addProject = m.lastProject
+		m.addProject = m.recents[0]
 		m.mode = modeAdd
 		m.err = ""
 		m.input.Placeholder = "Buy milk @errand tomorrow 9am p1"
@@ -683,6 +807,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailID = t.ID
 			m.mode = modeDetail
 			m.err = ""
+			m.comments = nil
+			m.commentErr = ""
+			m.commentsLoading = true
+			return m, loadCommentsCmd(t.ID)
 		}
 		return m, nil
 	case "c":
@@ -692,6 +820,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		// Ongoing — show all tasks tagged @ongoing.
 		return m, m.commit(viewState{filter: "@ongoing"})
+	case "R":
+		// Recently added — last 10 tasks by added date.
+		m.loading = true
+		m.status = "loading recent…"
+		return m, recentCmd(10)
 	case "P":
 		// Filter by priority — open the priority picker.
 		m.mode = modePriorityPick
@@ -752,6 +885,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // setSort applies a sort mode; pressing the same mode again flips direction.
 func (m *model) setSort(s sortMode) {
+	m.recentView = false // sorting leaves the recently-added view
 	if s != sortNone && m.sortMode == s {
 		m.sortDesc = !m.sortDesc
 	} else {
@@ -780,26 +914,31 @@ func syncCmd() tea.Cmd {
 // allProjectsID is the sentinel for the "All Projects" picker entry (view mode).
 const allProjectsID = "__all__"
 
-// setPickerItems rebuilds the project picker list. In view mode it prepends an
-// "All Projects" entry so you can clear the project filter from the menu.
+// setPickerItems rebuilds the project picker list: an optional "All Projects"
+// reset (view mode), then up to 3 recently-chosen projects, a separator, then
+// all projects.
 func (m *model) setPickerItems() {
 	var items []list.Item
 	if m.pickIntent == pickView {
-		items = append(items, projItem{Project{ID: allProjectsID, Name: "↩ All Projects"}})
+		items = append(items, projItem{p: Project{ID: allProjectsID, Name: "↩ All Projects"}, kind: kindAllProjects})
+	}
+	if len(m.recents) > 0 {
+		for _, p := range m.recents {
+			items = append(items, projItem{p: p, kind: kindRecent})
+		}
+		items = append(items, projItem{kind: kindSep})
 	}
 	for _, p := range m.projects {
-		items = append(items, projItem{p})
+		items = append(items, projItem{p: p, kind: kindProject})
 	}
 	m.projList.SetItems(items)
 }
 
-// selectLastProject moves the picker cursor onto the remembered project.
+// selectLastProject puts the cursor on the most recent project (the first
+// recent row), so the default selection is the last project you chose.
 func (m *model) selectLastProject() {
-	if m.lastProject.ID == "" {
-		return
-	}
 	for i, it := range m.projList.Items() {
-		if p, ok := it.(projItem); ok && p.p.ID == m.lastProject.ID {
+		if p, ok := it.(projItem); ok && p.kind == kindRecent {
 			m.projList.Select(i)
 			return
 		}
@@ -873,17 +1012,22 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeList
 			return m, nil
 		}
+		if it.kind == kindSep {
+			return m, nil // separator isn't selectable
+		}
 		if m.pickIntent == pickView {
 			m.mode = modeList
 			if it.p.ID == allProjectsID {
 				return m, m.commit(viewState{}) // back to all projects
 			}
+			m.recents = pushRecentProject(m.recents, it.p)
+			SaveRecentProjects(m.recents)
 			return m, m.commit(viewState{projectView: it.p.Name})
 		}
 		// pickAdd: remember the project and move to the add input.
 		m.addProject = it.p
-		m.lastProject = it.p
-		SaveLastProject(it.p)
+		m.recents = pushRecentProject(m.recents, it.p)
+		SaveRecentProjects(m.recents)
 		m.mode = modeAdd
 		m.input.Placeholder = "Buy milk @errand tomorrow 9am p1"
 		m.input.SetValue("")
@@ -983,11 +1127,39 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.startEdit(efLabels, "comma-separated, e.g. ongoing,follow-up", labelsCSV(m.detailTask.Labels))
 	case "e":
 		return m, m.startEdit(efContent, "task name", m.detailTask.Content)
+	case "m":
+		m.mode = modeCommentAdd
+		m.input.Placeholder = "write a comment…"
+		m.input.SetValue("")
+		m.input.CursorEnd()
+		m.input.Focus()
+		return m, textinput.Blink
 	case "r":
 		m.loading = true
 		return m, loadTasks(m.filter)
 	}
 	return m, nil
+}
+
+func (m model) updateCommentAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeDetail
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.input.Value())
+		m.mode = modeDetail
+		m.input.Blur()
+		if val == "" {
+			return m, nil
+		}
+		m.commentsLoading = true
+		return m, addCommentCmd(m.detailID, val)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
 }
 
 func (m model) updateDetailEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1043,7 +1215,9 @@ func (m model) View() string {
 
 	title := titleBarStyle.Render("✓ Todoist")
 	scope := "  all tasks"
-	if m.filter != "" {
+	if m.recentView {
+		scope = "  recently added"
+	} else if m.filter != "" {
 		scope = "  filter: " + m.filter
 	} else {
 		var parts []string
@@ -1073,7 +1247,7 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.helpView())
 	}
 
-	if m.mode == modeDetail || m.mode == modeDetailEdit {
+	if m.mode == modeDetail || m.mode == modeDetailEdit || m.mode == modeCommentAdd {
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.detailView())
 	}
 
@@ -1167,18 +1341,46 @@ func (m model) detailView() string {
 		"",
 	}
 
+	// Comments section.
+	head := lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8")).Bold(true)
+	count := ""
+	if !m.commentsLoading && m.commentErr == "" {
+		count = fmt.Sprintf(" (%d)", len(m.comments))
+	}
+	lines = append(lines, "  "+head.Render("Comments"+count))
+	switch {
+	case m.commentErr != "":
+		lines = append(lines, "  "+errStyle.Render("⚠ "+m.commentErr))
+	case m.commentsLoading:
+		lines = append(lines, "  "+label.Render("loading…"))
+	case len(m.comments) == 0:
+		lines = append(lines, "  "+label.Render("(none yet)"))
+	default:
+		for _, c := range m.comments {
+			when := lipgloss.NewStyle().Foreground(subColor).Render(shortTime(c.PostedAt))
+			body := strings.ReplaceAll(strings.TrimSpace(c.Content), "\n", " ")
+			lines = append(lines, "  "+lipgloss.NewStyle().Foreground(brandRed).Render("• ")+when+"  "+lipgloss.NewStyle().Foreground(lipgloss.Color("#DDDDDD")).Render(body))
+		}
+	}
+	lines = append(lines, "")
+
 	if m.mode == modeDetailEdit {
 		titles := map[editField]string{efDate: "Set due date", efLabels: "Set labels (comma-separated)", efContent: "Edit name"}
 		prompt := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(titles[m.editField] + "  ")
 		box := promptBox.Width(m.width - 4).Render(prompt + m.input.View())
 		lines = append(lines, box, "", helpStyle.Render("  enter save · esc cancel"))
+	} else if m.mode == modeCommentAdd {
+		prompt := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("New comment  ")
+		box := promptBox.Width(m.width - 4).Render(prompt + m.input.View())
+		lines = append(lines, box, "", helpStyle.Render("  enter post · esc cancel"))
 	} else {
 		actions := "  " +
-			key.Render("1-4") + label.Render(" priority   ") +
-			key.Render("t") + label.Render(" date   ") +
-			key.Render("l") + label.Render(" labels   ") +
-			key.Render("e") + label.Render(" name   ") +
-			key.Render("c") + label.Render(" complete   ") +
+			key.Render("1-4") + label.Render(" priority  ") +
+			key.Render("t") + label.Render(" date  ") +
+			key.Render("l") + label.Render(" labels  ") +
+			key.Render("e") + label.Render(" name  ") +
+			key.Render("m") + label.Render(" comment  ") +
+			key.Render("c") + label.Render(" complete  ") +
 			key.Render("b/esc") + label.Render(" back")
 		lines = append(lines, actions)
 		if m.err != "" {
@@ -1221,12 +1423,14 @@ func helpLines() []string {
 		head.Render("  In the task view"),
 		row("1-4", "Set priority (p1–p4)"),
 		row("t", "Set due date    l  set labels    e  edit name"),
+		row("m", "Add a comment (view existing comments above)"),
 		row("c", "Complete    b/esc  back to the list"),
 		"",
 		head.Render("  Views"),
 		row("p", "View by project (pick from the list; “↩ All Projects” to reset)"),
 		row("P", "Filter by priority (pick p1–p4 from the menu)"),
 		row("o", "Ongoing — show all tasks tagged @ongoing"),
+		row("R", "Recently added — the last 10 tasks you created"),
 		row("/", "Search — plain words search locally; filters run server-side"),
 		"",
 		head.Render("  Sort  (press the same number again to reverse)"),
@@ -1336,7 +1540,7 @@ func (m model) footer() string {
 	if m.err != "" {
 		return errStyle.Render("⚠ " + m.err)
 	}
-	keys := "a add · p project · P priority · o ongoing · / search · 1-5 sort · enter view · c done · d del · s sync · H help · q quit"
+	keys := "a add · p project · P priority · o ongoing · R recent · / search · 1-5 sort · enter view · c done · s sync · H help · q quit"
 	st := m.status
 	if m.loading {
 		st = "⟳ " + st

@@ -60,9 +60,20 @@ func TestKeyOpensProjectPicker(t *testing.T) {
 	}
 }
 
+// selectProjItem moves the picker cursor to the (non-separator) item with the
+// given name, so tests don't depend on the picker's row layout.
+func selectProjItem(m *model, name string) {
+	for i, it := range m.projList.Items() {
+		if p, ok := it.(projItem); ok && p.kind != kindSep && p.p.Name == name {
+			m.projList.Select(i)
+			return
+		}
+	}
+}
+
 func TestProjectPickThenAdd(t *testing.T) {
 	m := initialModel()
-	m.lastProject = Project{} // deterministic: ignore any persisted last project
+	m.recents = nil // deterministic: ignore any persisted recents
 	m.width, m.height = 100, 40
 	m.projList.SetSize(100, 36)
 	// load some projects
@@ -77,7 +88,8 @@ func TestProjectPickThenAdd(t *testing.T) {
 	if m.mode != modeProjectPick {
 		t.Fatal("expected project pick mode")
 	}
-	// select first project
+	// select #Personal
+	selectProjItem(&m, "#Personal")
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	if m.mode != modeAdd {
@@ -86,15 +98,15 @@ func TestProjectPickThenAdd(t *testing.T) {
 	if m.addProject.ID != "p1" {
 		t.Fatalf("addProject = %q, want p1", m.addProject.ID)
 	}
-	if m.lastProject.ID != "p1" {
-		t.Fatalf("lastProject should be remembered, got %q", m.lastProject.ID)
+	if len(m.recents) == 0 || m.recents[0].ID != "p1" {
+		t.Fatalf("most recent project should be p1, got %+v", m.recents)
 	}
 }
 
 func TestAddToLastProjectShortcut(t *testing.T) {
 	m := initialModel()
 	m.width, m.height = 100, 40
-	m.lastProject = Project{ID: "p9", Name: "#Work"}
+	m.recents = []Project{{ID: "p9", Name: "#Work"}}
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
 	mm := nm.(model)
 	if mm.mode != modeAdd {
@@ -201,7 +213,7 @@ func TestLocalTextSearchFiltersTasks(t *testing.T) {
 
 func TestViewByProject(t *testing.T) {
 	m := initialModel()
-	m.lastProject = Project{} // deterministic
+	m.recents = nil // deterministic
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	m.projList.SetSize(100, 36)
@@ -217,15 +229,13 @@ func TestViewByProject(t *testing.T) {
 		{ID: "3", Project: "#Personal", Content: "Read a book"},
 	}})
 	m = nm.(model)
-	// open view-by-project
+	// open view-by-project and choose #Bills
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	m = nm.(model)
 	if m.mode != modeProjectPick || m.pickIntent != pickView {
 		t.Fatal("'p' should open the picker in view intent")
 	}
-	// index 0 is the "All Projects" entry; move down to #Bills
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = nm.(model)
+	selectProjItem(&m, "#Bills")
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	if m.mode != modeList {
@@ -240,11 +250,15 @@ func TestViewByProject(t *testing.T) {
 	if got := len(m.list.Items()); got != 2 {
 		t.Fatalf("want 2 #Bills tasks, got %d", got)
 	}
+	// choosing a project to view records it as recent
+	if len(m.recents) == 0 || m.recents[0].Name != "#Bills" {
+		t.Fatalf("view should record recent project, got %+v", m.recents)
+	}
 
-	// Reopen the picker and choose "All Projects" (index 0) to go back.
+	// Reopen and choose "All Projects" to go back.
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	m = nm.(model)
-	m.projList.Select(0) // ensure cursor on the All Projects entry
+	selectProjItem(&m, "↩ All Projects")
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	if m.projectView != "" {
@@ -257,8 +271,7 @@ func TestViewByProject(t *testing.T) {
 	// Re-apply a project view, then verify Esc also clears it.
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	m = nm.(model)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = nm.(model)
+	selectProjItem(&m, "#Bills")
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	if m.projectView != "#Bills" {
@@ -276,7 +289,7 @@ func TestViewByProject(t *testing.T) {
 
 func TestBackAndHomeNavigation(t *testing.T) {
 	m := initialModel()
-	m.lastProject = Project{}
+	m.recents = nil
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	m.projList.SetSize(100, 36)
@@ -292,8 +305,7 @@ func TestBackAndHomeNavigation(t *testing.T) {
 	// View #Bills
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	m = nm.(model)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = nm.(model)
+	selectProjItem(&m, "#Bills")
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	if m.projectView != "#Bills" || len(m.list.Items()) != 2 {
@@ -330,8 +342,7 @@ func TestBackAndHomeNavigation(t *testing.T) {
 	// Home from a project view jumps straight to all tasks
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	m = nm.(model)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = nm.(model)
+	selectProjItem(&m, "#Bills")
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
