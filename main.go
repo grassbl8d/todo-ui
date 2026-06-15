@@ -1777,7 +1777,7 @@ func (m model) View() string {
 		dim := lipgloss.NewStyle().Foreground(subColor)
 		rows := []string{
 			accent.Render("Clear all local data?"),
-			dim.Render("This signs todoui out and wipes its local state:"),
+			dim.Render("This signs todo-ui out and wipes its local state:"),
 			dim.Render("  • your saved Todoist API token"),
 			dim.Render("  • the offline cache (tasks, projects, comments)"),
 			dim.Render("  • any changes not yet synced"),
@@ -2193,13 +2193,13 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "-v", "version":
-			fmt.Println("todoui", version)
+			fmt.Println("todo-ui", version)
 			return
 		case "--help", "-h", "help":
-			fmt.Println("todoui — a terminal UI for Todoist (Sync API, offline-first)")
-			fmt.Println("Usage: todoui            start the UI")
-			fmt.Println("       todoui sync       flush queued changes + pull, headless")
-			fmt.Println("       todoui --version  print version")
+			fmt.Println("todo-ui — a terminal UI for Todoist (Sync API, offline-first)")
+			fmt.Println("Usage: todo-ui            start the UI")
+			fmt.Println("       todo-ui sync       flush queued changes + pull, headless")
+			fmt.Println("       todo-ui --version  print version")
 			fmt.Println("Press H inside the app for the keyboard reference.")
 			return
 		case "sync":

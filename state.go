@@ -6,13 +6,21 @@ import (
 	"strings"
 )
 
-// stateDir returns ~/.config/todoui, creating it if needed.
+// stateDir returns ~/.config/todo-ui, creating it if needed. If the legacy
+// ~/.config/todoui directory exists and the new one doesn't, it is migrated so
+// existing token/cache/settings carry over.
 func stateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	dir := filepath.Join(home, ".config", "todoui")
+	dir := filepath.Join(home, ".config", "todo-ui")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		legacy := filepath.Join(home, ".config", "todoui")
+		if _, lerr := os.Stat(legacy); lerr == nil {
+			_ = os.Rename(legacy, dir)
+		}
+	}
 	_ = os.MkdirAll(dir, 0o755)
 	return dir
 }

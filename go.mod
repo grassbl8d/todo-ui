@@ -1,4 +1,4 @@
-module github.com/grassbl8d/todoui
+module github.com/grassbl8d/todo-ui
 
 go 1.24.2
 

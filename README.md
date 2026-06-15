@@ -1,4 +1,4 @@
-# todoui
+# todo-ui
 
 A fast, colourful **terminal UI for [Todoist](https://todoist.com)**, built in Go with
 [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss).
@@ -41,37 +41,37 @@ to the server when you sync.
 
 ## Setup (API token)
 
-On first run, todoui **onboards you**: if no token is found it prompts you to paste your
+On first run, todo-ui **onboards you**: if no token is found it prompts you to paste your
 Todoist API token (Todoist → **Settings → Integrations → Developer → API token**), then
-validates it before continuing. The token is saved to `~/.config/todoui/config.json`
+validates it before continuing. The token is saved to `~/.config/todo-ui/config.json`
 (and a copy to `~/.config/todoist/config.json` for CLI compatibility).
 
 You can also provide it up front:
 
 - **Env var:** `export TODOIST_API_TOKEN=<your token>`, or
-- **File:** `~/.config/todoui/config.json` (or `~/.config/todoist/config.json`)
+- **File:** `~/.config/todo-ui/config.json` (or `~/.config/todoist/config.json`)
   containing `{"token": "<your token>"}`.
 
-todoui looks for the token in that order: env var → `~/.config/todoui` →
+todo-ui looks for the token in that order: env var → `~/.config/todo-ui` →
 `~/.config/todoist`. **Every launch validates the token** and re-prompts if it's been
 revoked.
 
 Verify headlessly:
 
 ```bash
-todoui sync     # "synced: … N tasks, M projects cached"
+todo-ui sync     # "synced: … N tasks, M projects cached"
 ```
 
 ---
 
-## Building todoui
+## Building todo-ui
 
 Requires **Go 1.24+** ([install Go](https://go.dev/dl/)).
 
 ```bash
-git clone https://github.com/grassbl8d/todoui.git
-cd todoui
-go build -o todoui .      # produces ./todoui (todoui.exe on Windows)
+git clone https://github.com/grassbl8d/todo-ui.git
+cd todo-ui
+go build -o todo-ui .      # produces ./todo-ui (todo-ui.exe on Windows)
 ```
 
 ### Platform notes
@@ -79,18 +79,18 @@ go build -o todoui .      # produces ./todoui (todoui.exe on Windows)
 **macOS / Linux**
 
 ```bash
-go build -o todoui .
+go build -o todo-ui .
 # optional: put it on your PATH
-sudo mv todoui /usr/local/bin/        # Linux
-mv todoui /opt/homebrew/bin/          # macOS (Apple Silicon Homebrew prefix)
+sudo mv todo-ui /usr/local/bin/        # Linux
+mv todo-ui /opt/homebrew/bin/          # macOS (Apple Silicon Homebrew prefix)
 ```
 
 **Windows** (PowerShell)
 
 ```powershell
-go build -o todoui.exe .
+go build -o todo-ui.exe .
 # optional: move somewhere on your PATH, e.g.
-Move-Item todoui.exe "$env:USERPROFILE\bin\todoui.exe"
+Move-Item todo-ui.exe "$env:USERPROFILE\bin\todo-ui.exe"
 ```
 
 ### Cross-compiling
@@ -98,16 +98,16 @@ Move-Item todoui.exe "$env:USERPROFILE\bin\todoui.exe"
 Go builds for any OS/arch from one machine — no C toolchain needed (this is pure Go):
 
 ```bash
-GOOS=linux   GOARCH=amd64 go build -o dist/todoui-linux-amd64 .
-GOOS=darwin  GOARCH=arm64 go build -o dist/todoui-darwin-arm64 .
-GOOS=darwin  GOARCH=amd64 go build -o dist/todoui-darwin-amd64 .
-GOOS=windows GOARCH=amd64 go build -o dist/todoui-windows-amd64.exe .
+GOOS=linux   GOARCH=amd64 go build -o dist/todo-ui-linux-amd64 .
+GOOS=darwin  GOARCH=arm64 go build -o dist/todo-ui-darwin-arm64 .
+GOOS=darwin  GOARCH=amd64 go build -o dist/todo-ui-darwin-amd64 .
+GOOS=windows GOARCH=amd64 go build -o dist/todo-ui-windows-amd64.exe .
 ```
 
 ### Install directly with Go
 
 ```bash
-go install github.com/grassbl8d/todoui@latest
+go install github.com/grassbl8d/todo-ui@latest
 # binary lands in $(go env GOPATH)/bin — make sure that's on your PATH
 ```
 
@@ -118,7 +118,7 @@ go install github.com/grassbl8d/todoui@latest
 Just run it:
 
 ```bash
-todoui
+todo-ui
 ```
 
 It opens full-screen (alt-screen), loads your tasks and projects, and you drive it
@@ -216,7 +216,7 @@ from the picker, so multi-word project names are always exact.
 
 ## How sync works
 
-todoui is **offline-first**:
+todo-ui is **offline-first**:
 
 1. On startup it loads the on-disk cache and shows it immediately (works with no network),
    then runs one background sync if you're online.
@@ -225,15 +225,15 @@ todoui is **offline-first**:
 3. Pressing **`s`** flushes the queue and pulls updates via the Todoist **Sync API**
    (incremental via a sync token). Offline, changes simply stay queued until the next sync.
 
-Headless: `todoui sync` does one push+pull from a script or cron.
+Headless: `todo-ui sync` does one push+pull from a script or cron.
 
 ### State / cache files
 
 | File | Purpose |
 |------|---------|
-| `~/.config/todoui/cache.json` | Local snapshot (tasks, projects, labels, notes, sync token) |
-| `~/.config/todoui/queue.json` | Pending changes not yet pushed |
-| `~/.config/todoui/recent_projects.txt` | Your last 3 chosen projects |
+| `~/.config/todo-ui/cache.json` | Local snapshot (tasks, projects, labels, notes, sync token) |
+| `~/.config/todo-ui/queue.json` | Pending changes not yet pushed |
+| `~/.config/todo-ui/recent_projects.txt` | Your last 3 chosen projects |
 
 Delete these to reset; they're rebuilt on the next sync.
 
@@ -262,8 +262,8 @@ go test ./...
 
 - **`no token …`** — set `TODOIST_API_TOKEN` or create
   `~/.config/todoist/config.json` with `{"token":"…"}` (see **Setup**). Verify with
-  `todoui sync`.
-- **Empty list** — run `todoui sync` (or press `s` in the app) to pull from the server.
+  `todo-ui sync`.
+- **Empty list** — run `todo-ui sync` (or press `s` in the app) to pull from the server.
 - **`●N unsynced` stays** — you're offline or the token is invalid; changes are safe in
   the queue and push on the next successful sync.
 - **Colours look off** — make sure your terminal advertises a 256-colour/truecolor

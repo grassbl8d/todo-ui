@@ -1,6 +1,7 @@
 # Compiled binaries
+/todo-ui
+/todo-ui.exe
 /todoui
-/todoui.exe
 /dist/
 *.exe
 *.test
@@ -18,5 +19,5 @@ vendor/
 *.swp
 *~
 
-# Local state (todoui writes to ~/.config/todoui, but ignore any stray local copies)
+# Local state (todo-ui writes to ~/.config/todo-ui, but ignore any stray local copies)
 last_project.txt
