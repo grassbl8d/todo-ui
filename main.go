@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -131,6 +132,17 @@ const (
 	modeConfirm
 	modeProjectPick
 	modeHelp
+	modeDetail     // viewing a single task
+	modeDetailEdit // editing one field of the task in detail view
+)
+
+// editField is which task field the detail editor is changing.
+type editField int
+
+const (
+	efDate editField = iota
+	efLabels
+	efContent
 )
 
 // viewState captures everything that defines what the task list shows, so we
@@ -139,6 +151,35 @@ type viewState struct {
 	filter      string
 	textQuery   string
 	projectView string
+}
+
+// sortMode is how the task list is ordered.
+type sortMode int
+
+const (
+	sortNone     sortMode = iota // original Todoist order
+	sortPriority                 // p1 → p4
+	sortDue                      // soonest due first (no date last)
+	sortProject                  // project name A→Z
+	sortName                     // task content A→Z
+	sortLabels                   // labels A→Z
+)
+
+func (s sortMode) label() string {
+	switch s {
+	case sortPriority:
+		return "priority"
+	case sortDue:
+		return "due date"
+	case sortProject:
+		return "project"
+	case sortName:
+		return "name"
+	case sortLabels:
+		return "labels"
+	default:
+		return "default"
+	}
 }
 
 // pickIntent distinguishes why the project picker is open.
@@ -163,6 +204,11 @@ type model struct {
 	loadedFilter string     // the server filter that allTasks currently reflects
 	current      viewState  // the committed view currently shown
 	history      []viewState // back-stack of previously committed views
+	sortMode     sortMode   // current ordering of the task list
+	sortDesc     bool       // reverse the current ordering
+	detailTask   Task       // task shown in the detail view
+	detailID     string     // id of the task in the detail view
+	editField    editField  // which field the detail editor is editing
 	addProject  Project    // project chosen for the task currently being added
 	lastProject Project // most recently used project (remembered across runs)
 	status      string
@@ -266,12 +312,48 @@ func quickAddInProject(text string, proj Project) tea.Cmd {
 			if after, err := ListTasks(""); err == nil {
 				for _, t := range after {
 					if !before[t.ID] {
-						_ = ModifyProject(t.ID, proj.ID)
+						_ = ModifyProject(t.ID, proj.ID, prioNum(t.Priority))
 					}
 				}
 			}
 		}
 		return actionMsg{status: "added to " + proj.Name + ": " + text}
+	}
+}
+
+func setPriorityCmd(id string, p int) tea.Cmd {
+	return func() tea.Msg {
+		if err := SetPriority(id, p); err != nil {
+			return errMsg{err}
+		}
+		return actionMsg{status: fmt.Sprintf("priority → p%d", p)}
+	}
+}
+
+func setDateCmd(id, date string, prio int) tea.Cmd {
+	return func() tea.Msg {
+		if err := SetDate(id, date, prio); err != nil {
+			return errMsg{err}
+		}
+		return actionMsg{status: "due date updated"}
+	}
+}
+
+func setLabelsCmd(id, labels string, prio int) tea.Cmd {
+	return func() tea.Msg {
+		if err := SetLabels(id, labels, prio); err != nil {
+			return errMsg{err}
+		}
+		return actionMsg{status: "labels updated"}
+	}
+}
+
+func setContentCmd(id, content string, prio int) tea.Cmd {
+	return func() tea.Msg {
+		if err := SetContent(id, content, prio); err != nil {
+			return errMsg{err}
+		}
+		return actionMsg{status: "name updated"}
 	}
 }
 
@@ -305,7 +387,7 @@ func (m *model) selectedTask() (Task, bool) {
 // text query (case-insensitive substring over content, project and labels).
 func (m *model) applyView() {
 	q := strings.ToLower(strings.TrimSpace(m.textQuery))
-	var items []list.Item
+	var matched []Task
 	for _, t := range m.allTasks {
 		if m.projectView != "" && t.Project != m.projectView {
 			continue
@@ -316,9 +398,67 @@ func (m *model) applyView() {
 				continue
 			}
 		}
-		items = append(items, taskItem{t})
+		matched = append(matched, t)
+	}
+	m.sortTasks(matched)
+	items := make([]list.Item, len(matched))
+	for i, t := range matched {
+		items[i] = taskItem{t}
 	}
 	m.list.SetItems(items)
+}
+
+// dueSortKey turns a CLI due string ("25/06/05(Thu) 09:00") into a
+// lexicographically comparable key; empty dates sort last.
+func dueSortKey(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "99999999 9999"
+	}
+	date := s
+	if i := strings.Index(s, "("); i >= 0 {
+		date = s[:i]
+	}
+	date = strings.ReplaceAll(strings.TrimSpace(date), "/", "")
+	tm := "0000"
+	if i := strings.Index(s, ")"); i >= 0 {
+		if rest := strings.ReplaceAll(strings.TrimSpace(s[i+1:]), ":", ""); rest != "" {
+			tm = rest
+		}
+	}
+	return date + " " + tm
+}
+
+// sortTasks orders ts in place according to the current sort mode/direction.
+func (m *model) sortTasks(ts []Task) {
+	if m.sortMode == sortNone {
+		return
+	}
+	var less func(i, j int) bool
+	switch m.sortMode {
+	case sortPriority:
+		less = func(i, j int) bool { return ts[i].Priority < ts[j].Priority }
+	case sortDue:
+		less = func(i, j int) bool { return dueSortKey(ts[i].DueDate) < dueSortKey(ts[j].DueDate) }
+	case sortProject:
+		less = func(i, j int) bool {
+			return strings.ToLower(ts[i].Project) < strings.ToLower(ts[j].Project)
+		}
+	case sortName:
+		less = func(i, j int) bool {
+			return strings.ToLower(ts[i].Content) < strings.ToLower(ts[j].Content)
+		}
+	case sortLabels:
+		less = func(i, j int) bool {
+			return strings.ToLower(ts[i].Labels) < strings.ToLower(ts[j].Labels)
+		}
+	}
+	sort.SliceStable(ts, func(i, j int) bool {
+		if m.sortDesc {
+			return less(j, i)
+		}
+		return less(i, j)
+	})
 }
 
 // scopeStatus describes the current view and its visible count.
@@ -418,6 +558,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allTasks = msg.tasks
 		m.applyView()
 		m.status = m.scopeStatus()
+		// Keep the detail view in sync after an edit/reload.
+		if (m.mode == modeDetail || m.mode == modeDetailEdit) && m.detailID != "" {
+			found := false
+			for _, t := range m.allTasks {
+				if t.ID == m.detailID {
+					m.detailTask = t
+					found = true
+					break
+				}
+			}
+			if !found {
+				// task no longer present (e.g. completed) → return to list
+				m.mode = modeList
+			}
+		}
 		return m, nil
 
 	case actionMsg:
@@ -446,6 +601,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.mode = modeList // any other key closes help
 			return m, nil
+		case modeDetail:
+			return m.updateDetail(msg)
+		case modeDetailEdit:
+			return m.updateDetailEdit(msg)
 		}
 	}
 
@@ -503,10 +662,21 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.CursorEnd()
 		m.input.Focus()
 		return m, textinput.Blink
-	case "c", "enter":
+	case "enter":
+		if t, ok := m.selectedTask(); ok {
+			m.detailTask = t
+			m.detailID = t.ID
+			m.mode = modeDetail
+			m.err = ""
+		}
+		return m, nil
+	case "c":
 		if t, ok := m.selectedTask(); ok {
 			return m, closeCmd(t.ID, t.Content)
 		}
+	case "o":
+		// Ongoing — show all tasks tagged @ongoing.
+		return m, m.commit(viewState{filter: "@ongoing"})
 	case "d":
 		if _, ok := m.selectedTask(); ok {
 			m.mode = modeConfirm
@@ -515,6 +685,11 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.loading = true
 		m.status = "refreshing…"
+		return m, loadTasks(m.filter)
+	case "s":
+		// Sync the underlying todoist client, then refresh.
+		m.loading = true
+		m.status = "syncing…"
 		return m, tea.Sequence(syncCmd(), loadTasks(m.filter))
 	case "b":
 		return m, m.goBack()
@@ -524,10 +699,48 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "H", "?":
 		m.mode = modeHelp
 		return m, nil
+	case "1":
+		m.setSort(sortPriority)
+		return m, nil
+	case "2":
+		m.setSort(sortDue)
+		return m, nil
+	case "3":
+		m.setSort(sortProject)
+		return m, nil
+	case "4":
+		m.setSort(sortName)
+		return m, nil
+	case "5":
+		m.setSort(sortLabels)
+		return m, nil
+	case "0":
+		m.setSort(sortNone)
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+// setSort applies a sort mode; pressing the same mode again flips direction.
+func (m *model) setSort(s sortMode) {
+	if s != sortNone && m.sortMode == s {
+		m.sortDesc = !m.sortDesc
+	} else {
+		m.sortMode = s
+		m.sortDesc = false
+	}
+	m.applyView()
+	if s == sortNone {
+		m.status = "sort: default order"
+		return
+	}
+	dir := "↑"
+	if m.sortDesc {
+		dir = "↓"
+	}
+	m.status = fmt.Sprintf("sort: %s %s — %d", s.label(), dir, len(m.list.Items()))
 }
 
 func syncCmd() tea.Cmd {
@@ -652,6 +865,84 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// startEdit opens the field editor in the detail view, prefilled appropriately.
+func (m *model) startEdit(f editField, placeholder, prefill string) tea.Cmd {
+	m.editField = f
+	m.mode = modeDetailEdit
+	m.input.Placeholder = placeholder
+	m.input.SetValue(prefill)
+	m.input.CursorEnd()
+	m.input.Focus()
+	return textinput.Blink
+}
+
+// labelsCSV converts the CSV "@a @b" / "@a,@b" label string to "a,b" for editing.
+func labelsCSV(s string) string {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == ',' })
+	for i, f := range fields {
+		fields[i] = strings.TrimPrefix(strings.TrimSpace(f), "@")
+	}
+	return strings.Join(fields, ",")
+}
+
+func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "b", "q", "enter":
+		m.mode = modeList
+		return m, nil
+	case "c":
+		m.mode = modeList
+		m.loading = true
+		return m, closeCmd(m.detailID, m.detailTask.Content)
+	case "1", "2", "3", "4":
+		p := int(msg.String()[0] - '0')
+		m.loading = true
+		return m, setPriorityCmd(m.detailID, p)
+	case "t", "D":
+		return m, m.startEdit(efDate, "today · tomorrow 9am · 2026/07/01 · (empty cancels)", "")
+	case "l":
+		return m, m.startEdit(efLabels, "comma-separated, e.g. ongoing,follow-up", labelsCSV(m.detailTask.Labels))
+	case "e":
+		return m, m.startEdit(efContent, "task name", m.detailTask.Content)
+	case "r":
+		m.loading = true
+		return m, loadTasks(m.filter)
+	}
+	return m, nil
+}
+
+func (m model) updateDetailEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeDetail
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.input.Value())
+		m.mode = modeDetail
+		m.input.Blur()
+		if val == "" && m.editField != efLabels {
+			return m, nil // empty cancels (except labels, where empty clears them)
+		}
+		m.loading = true
+		prio := prioNum(m.detailTask.Priority)
+		switch m.editField {
+		case efDate:
+			return m, setDateCmd(m.detailID, val, prio)
+		case efLabels:
+			return m, setLabelsCmd(m.detailID, val, prio)
+		case efContent:
+			return m, setContentCmd(m.detailID, val, prio)
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
 func (m model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
@@ -689,10 +980,21 @@ func (m model) View() string {
 			scope = "  " + strings.Join(parts, " · ")
 		}
 	}
+	if m.sortMode != sortNone {
+		dir := "↑"
+		if m.sortDesc {
+			dir = "↓"
+		}
+		scope += lipgloss.NewStyle().Foreground(dimColor).Render(fmt.Sprintf("   ⇅ %s %s", m.sortMode.label(), dir))
+	}
 	header := lipgloss.JoinHorizontal(lipgloss.Center, title, statusStyle.Render(scope))
 
 	if m.mode == modeHelp {
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.helpView())
+	}
+
+	if m.mode == modeDetail || m.mode == modeDetailEdit {
+		return lipgloss.JoinVertical(lipgloss.Left, header, m.detailView())
 	}
 
 	var body string
@@ -734,6 +1036,59 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, listView, footer)
 }
 
+// detailView renders the single-task detail / edit screen.
+func (m model) detailView() string {
+	t := m.detailTask
+	label := lipgloss.NewStyle().Foreground(subColor)
+	key := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+
+	pc := prioColors[t.Priority]
+	if pc == "" {
+		pc = prioColors["p4"]
+	}
+	field := func(name, val string, valStyle lipgloss.Style) string {
+		if strings.TrimSpace(val) == "" {
+			val = "—"
+		}
+		return "  " + label.Render(fmt.Sprintf("%-10s", name)) + valStyle.Render(val)
+	}
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Render(t.Content)
+
+	lines := []string{
+		"",
+		"  " + title,
+		"",
+		field("Priority", t.Priority, lipgloss.NewStyle().Foreground(pc).Bold(true)),
+		field("Due", t.DueDate, lipgloss.NewStyle().Foreground(lipgloss.Color("#E5C07B"))),
+		field("Project", t.Project, lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))),
+		field("Labels", t.Labels, lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379"))),
+		field("ID", t.ID, label),
+		"",
+	}
+
+	if m.mode == modeDetailEdit {
+		titles := map[editField]string{efDate: "Set due date", efLabels: "Set labels (comma-separated)", efContent: "Edit name"}
+		prompt := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(titles[m.editField] + "  ")
+		box := promptBox.Width(m.width - 4).Render(prompt + m.input.View())
+		lines = append(lines, box, "", helpStyle.Render("  enter save · esc cancel"))
+	} else {
+		actions := "  " +
+			key.Render("1-4") + label.Render(" priority   ") +
+			key.Render("t") + label.Render(" date   ") +
+			key.Render("l") + label.Render(" labels   ") +
+			key.Render("e") + label.Render(" name   ") +
+			key.Render("c") + label.Render(" complete   ") +
+			key.Render("b/esc") + label.Render(" back")
+		lines = append(lines, actions)
+		if m.err != "" {
+			lines = append(lines, "", errStyle.Render("⚠ "+m.err))
+		} else if m.loading {
+			lines = append(lines, "", statusStyle.Render("⟳ "+m.status))
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
 // helpView renders the full-screen help page (opened with H or ?).
 func (m model) helpView() string {
 	key := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
@@ -754,15 +1109,31 @@ func (m model) helpView() string {
 		row("q ctrl+c", "Quit"),
 		"",
 		head.Render("  Tasks"),
+		row("enter", "Open the task — view & edit date, priority, labels, name"),
 		row("a", "Add a task — choose the project first"),
 		row("A", "Add a task straight to the last-used project"),
-		row("enter / c", "Complete the selected task"),
+		row("c", "Complete the selected task"),
 		row("d", "Delete the selected task (asks y/n)"),
-		row("r", "Sync + refresh from Todoist"),
+		row("r", "Refresh the list"),
+		row("s", "Sync the todoist client, then refresh"),
+		"",
+		head.Render("  In the task view"),
+		row("1-4", "Set priority (p1–p4)"),
+		row("t", "Set due date    l  set labels    e  edit name"),
+		row("c", "Complete    b/esc  back to the list"),
 		"",
 		head.Render("  Views"),
 		row("p", "View by project (pick from the list; “↩ All Projects” to reset)"),
+		row("o", "Ongoing — show all tasks tagged @ongoing"),
 		row("/", "Search — plain words search locally; filters run server-side"),
+		"",
+		head.Render("  Sort  (press the same number again to reverse)"),
+		row("1", "Priority (p1 → p4)"),
+		row("2", "Due date (soonest first, no-date last)"),
+		row("3", "Project (A → Z)"),
+		row("4", "Name (A → Z)"),
+		row("5", "Labels (A → Z)"),
+		row("0", "Default Todoist order"),
 		"",
 		head.Render("  Search tips"),
 		row("plain text", "anvaya, pay globe — instant local search of name/project/labels"),
@@ -782,7 +1153,7 @@ func (m model) footer() string {
 	if m.err != "" {
 		return errStyle.Render("⚠ " + m.err)
 	}
-	keys := "a add · p project · / search · b back · h home · enter/c done · d del · r refresh · H help · q quit"
+	keys := "a add · p project · o ongoing · / search · 1-5 sort · enter view · c done · d del · s sync · H help · q quit"
 	st := m.status
 	if m.loading {
 		st = "⟳ " + st

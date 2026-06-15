@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -119,10 +120,51 @@ func QuickAdd(text string) error {
 	return err
 }
 
+// prioNum converts a "p1".."p4" string to 1..4 (default 4).
+func prioNum(p string) int {
+	if len(p) == 2 && p[0] == 'p' {
+		if n := int(p[1] - '0'); n >= 1 && n <= 4 {
+			return n
+		}
+	}
+	return 4
+}
+
 // ModifyProject moves a task to a different project by ID.
-func ModifyProject(id, projectID string) error {
-	_, err := run("modify", "--project-id", projectID, id)
+//
+// NOTE: the CLI's `modify` always applies its --priority flag (default 4), so
+// every modify call must pass the task's current priority or it gets reset.
+func ModifyProject(id, projectID string, prio int) error {
+	return modify(id, "--priority", strconv.Itoa(prio), "--project-id", projectID)
+}
+
+// modify runs `todoist modify <options> <id>`.
+func modify(id string, args ...string) error {
+	full := append([]string{"modify"}, args...)
+	full = append(full, id)
+	_, err := run(full...)
 	return err
+}
+
+// SetPriority sets a task's priority (1–4, matching the pN shown in the list).
+func SetPriority(id string, p int) error { return modify(id, "--priority", strconv.Itoa(p)) }
+
+// The setters below pass the current priority too, because the CLI's modify
+// always re-applies its --priority default (4) and would otherwise reset it.
+
+// SetDate sets a task's due date (natural language or YYYY/MM/DD [HH:MM]).
+func SetDate(id, date string, prio int) error {
+	return modify(id, "--priority", strconv.Itoa(prio), "--date", date)
+}
+
+// SetLabels replaces a task's labels (comma-separated names, without @).
+func SetLabels(id, labels string, prio int) error {
+	return modify(id, "--priority", strconv.Itoa(prio), "--label-names", labels)
+}
+
+// SetContent changes a task's content/name.
+func SetContent(id, content string, prio int) error {
+	return modify(id, "--priority", strconv.Itoa(prio), "--content", content)
 }
 
 // CloseTask completes a task by ID.

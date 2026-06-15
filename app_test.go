@@ -360,6 +360,94 @@ func TestHelpPageToggle(t *testing.T) {
 	}
 }
 
+func TestEnterOpensDetail(t *testing.T) {
+	m := initialModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
+		{ID: "1", Priority: "p1", Project: "#Bills", Content: "Pay Globe", DueDate: "today", Labels: "@ongoing"},
+	}})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.mode != modeDetail {
+		t.Fatal("enter should open the detail view, not complete")
+	}
+	if m.detailID != "1" {
+		t.Fatalf("detailID = %q", m.detailID)
+	}
+	if !strings.Contains(m.View(), "Pay Globe") {
+		t.Fatal("detail view should render the task content")
+	}
+	// open the date editor
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m = nm.(model)
+	if m.mode != modeDetailEdit || m.editField != efDate {
+		t.Fatal("'t' should open the date editor")
+	}
+	// esc returns to detail
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm.(model)
+	if m.mode != modeDetail {
+		t.Fatal("esc should return to detail view")
+	}
+	// 'b' returns to the list
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	if nm.(model).mode != modeList {
+		t.Fatal("'b' should return to the list")
+	}
+}
+
+func TestPrioNum(t *testing.T) {
+	cases := map[string]int{"p1": 1, "p2": 2, "p3": 3, "p4": 4, "": 4, "x": 4}
+	for in, want := range cases {
+		if got := prioNum(in); got != want {
+			t.Errorf("prioNum(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestOngoingFilter(t *testing.T) {
+	m := initialModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = nm.(model)
+	if m.filter != "@ongoing" {
+		t.Fatalf("'o' should set the @ongoing filter, got %q", m.filter)
+	}
+	if cmd == nil {
+		t.Fatal("ongoing is a server filter; expected a reload command")
+	}
+}
+
+func TestSortByPriority(t *testing.T) {
+	m := initialModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
+		{ID: "1", Priority: "p4", Content: "low"},
+		{ID: "2", Priority: "p1", Content: "high"},
+		{ID: "3", Priority: "p2", Content: "mid"},
+	}})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	m = nm.(model)
+	first := m.list.Items()[0].(taskItem).t
+	if first.Priority != "p1" {
+		t.Fatalf("after sort by priority, first should be p1, got %s", first.Priority)
+	}
+	// reverse
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	m = nm.(model)
+	if !m.sortDesc {
+		t.Fatal("pressing 1 again should reverse the sort")
+	}
+	if m.list.Items()[0].(taskItem).t.Priority != "p4" {
+		t.Fatal("reversed priority sort should put p4 first")
+	}
+}
+
 func TestDeleteConfirmFlow(t *testing.T) {
 	m := initialModel()
 	m.width, m.height = 100, 40

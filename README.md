@@ -32,8 +32,13 @@ so it reuses your existing authentication and local cache. No API token wiring r
   [Todoist filter](https://todoist.com/help/articles/205248842)
   (`today | overdue`, `#Personal & p1`, `@follow-up`) to run it server-side.
 - **View by Project** — press `p`, pick a project from the list, and the view narrows
-  to just that project's tasks.
-- **Complete**, **delete** (with confirmation), and **sync + refresh** — all from the keyboard.
+  to just that project's tasks. Press `o` for everything tagged `@ongoing`.
+- **Open & edit a task** — press `Enter` to view a task and change its **priority,
+  due date, labels, or name**, or complete it, all in place.
+- **Sort** the list by priority, due date, project, name, or labels (`1`–`5`).
+- **Browser-style navigation** — `b` back, `h` home, `H`/`?` help.
+- **Complete**, **delete** (with confirmation), **refresh** (`r`) and **sync** (`s`)
+  — all from the keyboard.
 
 ---
 
@@ -124,17 +129,37 @@ entirely from the keyboard.
 | Key             | Action                                                        |
 |-----------------|--------------------------------------------------------------|
 | `↑` / `↓` `j`/`k` | Move selection                                             |
+| `Enter`         | **Open the task** — view & edit date, priority, labels, name |
 | `a`             | Add a task — opens the **project picker** first              |
 | `A`             | Add a task straight to the **last project** (skip picker)    |
+| `c`             | Complete the selected task                                   |
+| `d`             | Delete the selected task (asks `y`/`n`)                      |
 | `p`             | **View by project** — pick a project to filter the list      |
+| `o`             | **Ongoing** — show all tasks tagged `@ongoing`               |
 | `/`             | Search — plain words (local text search) or a Todoist filter |
+| `1`–`5`         | **Sort** by priority / due / project / name / labels (`0` = default; repeat to reverse) |
 | `b`             | **Back** — return to the previous view (like a browser)      |
 | `h` / `Esc`     | **Home** — back to all tasks / all projects                  |
+| `r`             | Refresh the list                                            |
+| `s`             | **Sync** the `todoist` client, then refresh                 |
 | `H` / `?`       | **Help** — open the full keyboard reference                  |
-| `Enter` / `c`   | Complete the selected task                                   |
-| `d`             | Delete the selected task (asks `y`/`n`)                      |
-| `r`             | Sync + refresh                                               |
 | `q` / `Ctrl+C`  | Quit                                                         |
+
+### Task view (press `Enter` on a task)
+
+Opens a detail screen for the selected task. From there:
+
+| Key       | Action                                  |
+|-----------|-----------------------------------------|
+| `1`–`4`   | Set priority (p1–p4)                     |
+| `t`       | Set / change the due date (natural language) |
+| `l`       | Edit labels (comma-separated, without `@`) |
+| `e`       | Edit the task name                       |
+| `c`       | Complete the task                        |
+| `b` / `Esc` | Back to the list                      |
+
+> Note: the underlying `todoist modify` always re-applies a priority, so todoui
+> carries the task's current priority on every edit to avoid silently resetting it.
 
 #### In the project picker (used by both `a` and `p`)
 Type to fuzzy-filter the list · `↑`/`↓` to move · `Enter` to select · `Esc` to cancel.
