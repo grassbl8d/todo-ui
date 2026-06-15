@@ -135,25 +135,28 @@ entirely from the keyboard.
 | `A`             | Add a task straight to the **most recent project**           |
 | `c`             | Complete the selected task                                   |
 | `x`             | Delete the selected task (asks first)                        |
-| `p`             | **View by project** — pick a project to filter the list      |
-| `P`             | **Pin (focus)** — show only the selected task; `:unpin` to release |
-| `!`             | **Filter by priority** — pick p1–p4 from a menu              |
+| `p`             | **View by project** — pick a project; `ctrl+n` new project, `ctrl+d` delete |
+| `P`             | **Filter by priority** — pick p1–p4 from a menu              |
+| `^`             | **Pin (focus)** — show only the selected task; `:unpin` to release |
+| `i` / `I`       | **💡 Catch an idea / browse ideas** (saved locally)         |
 | `*`             | **Toggle light / dark theme**                                |
-| `o`             | **Ongoing** — tasks with your ongoing label (default `@ongoing`) |
-| `f`             | **Follow-up** — tasks with your follow-up label (default `@ffup`) |
+| `O` / `F`       | **Tag / untag** the selected task as ongoing / follow-up    |
+| `o`             | **Ongoing view** — tasks with your ongoing label (default `@ongoing`) |
+| `f`             | **Follow-up view** — tasks with your follow-up label (default `@ffup`) |
 | `t`             | **Due today** (only)                                        |
 | `T`             | **Due today or earlier** (today + overdue)                  |
 | `d`             | **Deadline is today**                                       |
 | `D`             | **Deadline is today or earlier**                            |
 | `R`             | **Recently added** — the last 10 tasks you created           |
 | `/`             | **Find** — local text search, or a local filter expression  |
+| `S`             | **Filter** — type a filter that applies live as you type    |
 | `?`             | **Online search** — full Todoist filter grammar (needs network) |
 | `1`–`6`         | **Sort** by priority / due / deadline / project / name / labels (`0` = default; repeat to reverse) |
 | `b`             | **Back** — return to the previous view (like a browser)      |
 | `h` / `Esc`     | **Home** — back to all tasks / all projects                  |
 | `r`             | Refresh the view from the local cache                       |
 | `s`             | **Sync** — push queued changes & pull updates               |
-| `O`             | **Options** — ongoing/follow-up labels & auto-sync interval  |
+| `,`             | **Menu** — ongoing/follow-up labels & auto-sync interval     |
 | `X`             | **Clear data** — remove token, cache & queue (asks first)    |
 | `H`             | **Help** — open the (scrollable) keyboard reference          |
 | `q` / `Ctrl+C`  | Quit                                                         |

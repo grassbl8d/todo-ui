@@ -1,11 +1,23 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// TestMain isolates all on-disk state (cache, queue, ideas, settings, …) to a
+// temp HOME so the suite never touches the real ~/.config/todo-ui.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "todoui-test-home")
+	if err == nil {
+		os.Setenv("HOME", tmp)
+		defer os.RemoveAll(tmp)
+	}
+	os.Exit(m.Run())
+}
 
 // newTestModel builds a model with persisted state (pin/recents/cache) neutralized
 // so tests are deterministic regardless of the dev machine's ~/.config/todo-ui.
@@ -509,6 +521,94 @@ func TestAddWhileViewingProjectSkipsPicker(t *testing.T) {
 	}
 }
 
+func TestAddIdeaFunc(t *testing.T) {
+	ideas := addIdea(nil, "first")
+	ideas = addIdea(ideas, "second")
+	if len(ideas) != 2 || ideas[0].Text != "second" {
+		t.Fatalf("addIdea should prepend newest first, got %+v", ideas)
+	}
+}
+
+func TestIdeaCatcherFlow(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	// i opens the capture overlay
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = nm.(model)
+	if m.mode != modeIdeaAdd {
+		t.Fatal("i should open the idea catcher")
+	}
+	if !strings.Contains(m.View(), "Catch an idea") {
+		t.Fatal("idea overlay should render")
+	}
+	for _, r := range "ship it" {
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = nm.(model)
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if len(m.ideas) != 1 || m.ideas[0].Text != "ship it" {
+		t.Fatalf("idea should be captured, got %+v", m.ideas)
+	}
+	if m.mode != modeList {
+		t.Fatal("after capture should return to the list")
+	}
+	// I shows the list
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
+	m = nm.(model)
+	if m.mode != modeIdeaList || !strings.Contains(m.View(), "Ideas (1)") {
+		t.Fatal("I should show the captured ideas")
+	}
+	// x deletes
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = nm.(model)
+	if len(m.ideas) != 0 {
+		t.Fatal("x should delete the selected idea")
+	}
+}
+
+func TestIdeaCatcherWorksWhilePinned(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "focus", Priority: 1}
+	m.pinnedID = "1"
+	m.deriveAll()
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if nm.(model).mode != modeIdeaAdd {
+		t.Fatal("i should open the idea catcher even while pinned")
+	}
+}
+
+func TestProjectAddDeleteOpen(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.projList.SetSize(100, 36)
+	nm, _ := m.Update(projectsLoadedMsg{projects: []Project{{ID: "1", Name: "#Work"}}})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = nm.(model)
+	// ctrl+n opens new-project input
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	m = nm.(model)
+	if m.mode != modeProjectAdd {
+		t.Fatal("ctrl+n should open the new-project input")
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm.(model)
+	if m.mode != modeProjectPick {
+		t.Fatal("esc should return to the picker")
+	}
+	// ctrl+d on a project opens delete confirm
+	selectProjItem(&m, "#Work")
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = nm.(model)
+	if m.mode != modeProjectDelete || m.projDelTarget.Name != "#Work" {
+		t.Fatal("ctrl+d should open the delete confirm for the selected project")
+	}
+}
+
 func TestThemeToggle(t *testing.T) {
 	m := newTestModel()
 	m.width, m.height = 100, 40
@@ -542,10 +642,10 @@ func TestPinFocusAndUnpin(t *testing.T) {
 	// select the 2nd task, then pin it
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = nm.(model)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("^")})
 	m = nm.(model)
 	if m.pinnedID != "2" {
-		t.Fatalf("P should pin the selected task, got %q", m.pinnedID)
+		t.Fatalf("^ should pin the selected task, got %q", m.pinnedID)
 	}
 	if len(m.list.Items()) != 1 {
 		t.Fatalf("pinned: only 1 task should show, got %d", len(m.list.Items()))
@@ -595,10 +695,10 @@ func TestPinFromDetail(t *testing.T) {
 	if m.mode != modeDetail {
 		t.Fatal("enter should open detail")
 	}
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("^")})
 	m = nm.(model)
 	if m.pinnedID != "1" {
-		t.Fatalf("P in detail should pin the task, got %q", m.pinnedID)
+		t.Fatalf("^ in detail should pin the task, got %q", m.pinnedID)
 	}
 	if m.mode != modeList {
 		t.Fatal("pinning from detail should return to the focus view")
@@ -684,24 +784,66 @@ func TestOnlineSearchResults(t *testing.T) {
 	}
 }
 
-func TestOptionsPageOpens(t *testing.T) {
+func TestMenuPageOpens(t *testing.T) {
 	m := newTestModel()
 	m.width, m.height = 100, 40
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("O")})
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(",")})
 	m = nm.(model)
 	if m.mode != modeOptions {
-		t.Fatal("O should open the options page")
+		t.Fatal(", should open the menu")
 	}
-	if !strings.Contains(m.View(), "Options") {
-		t.Fatal("options page should render")
+	if !strings.Contains(m.View(), "Menu") {
+		t.Fatal("menu page should render")
 	}
-	// down then enter starts editing the auto-sync field
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+}
+
+func TestTagOngoingFollowup(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "task", Priority: 1}
+	m.deriveAll()
+	// O adds the ongoing label
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("O")})
 	m = nm.(model)
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.cache.Items["1"].Labels; len(got) != 1 || got[0] != m.settings.OngoingLabel {
+		t.Fatalf("O should add the ongoing label, got %v", got)
+	}
+	// O again removes it (toggle)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("O")})
 	m = nm.(model)
-	if m.mode != modeOptionsEdit || m.optCursor != 1 {
-		t.Fatal("enter on the 2nd row should edit the auto-sync interval")
+	if len(m.cache.Items["1"].Labels) != 0 {
+		t.Fatal("O again should remove the ongoing label")
+	}
+	// F adds the follow-up label
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("F")})
+	m = nm.(model)
+	if got := m.cache.Items["1"].Labels; len(got) != 1 || got[0] != m.settings.FollowupLabel {
+		t.Fatalf("F should add the follow-up label, got %v", got)
+	}
+}
+
+func TestLiveFilter(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, _ := m.Update(tasksLoadedMsg{tasks: []Task{
+		{ID: "1", Content: "a", Priority: "p1"},
+		{ID: "2", Content: "b", Priority: "p4"},
+	}})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")})
+	m = nm.(model)
+	if m.mode != modeFilter {
+		t.Fatal("S should open the live filter")
+	}
+	// typing 'p1' filters live to the one p1 task
+	for _, r := range "p1" {
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = nm.(model)
+	}
+	if got := len(m.list.Items()); got != 1 {
+		t.Fatalf("live filter 'p1' should leave 1 task, got %d", got)
 	}
 }
 
@@ -859,10 +1001,10 @@ func TestPriorityFilter(t *testing.T) {
 	}})
 	m = nm.(model)
 	// open priority picker (now on '!')
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
 	m = nm.(model)
 	if m.mode != modePriorityPick {
-		t.Fatal("! should open the priority picker")
+		t.Fatal("P should open the priority picker")
 	}
 	// pick p1 directly
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
@@ -877,7 +1019,7 @@ func TestPriorityFilter(t *testing.T) {
 		t.Fatalf("want 2 p1 tasks, got %d", len(m.list.Items()))
 	}
 	// reopen and choose All priorities (0) to clear
-	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})
 	m = nm.(model)
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("0")})
 	m = nm.(model)

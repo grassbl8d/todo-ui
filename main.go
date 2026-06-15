@@ -17,7 +17,7 @@ import (
 
 // version is the default shown in-app; release builds override it with
 // -ldflags "-X main.version=vX.Y.Z". Bump this when cutting a new version.
-var version = "v0.1.2"
+var version = "v0.1.3"
 
 // ---------- theming (light / dark) ----------
 
@@ -224,8 +224,13 @@ const (
 	modeClearData    // confirm clearing token + cache + queue
 	modeOptions      // settings page
 	modeOptionsEdit  // editing one setting
-	modeOnlineSearch // online Todoist filter query (?)
-	modeCommand      // ":" command line (e.g. :unpin)
+	modeOnlineSearch  // online Todoist filter query (?)
+	modeCommand       // ":" command line (e.g. :unpin)
+	modeProjectAdd    // entering a new project name (in the picker)
+	modeProjectDelete // confirm deleting a project (in the picker)
+	modeIdeaAdd       // 💡 capture a new idea (overlay)
+	modeIdeaList      // 💡 browse captured ideas
+	modeFilter        // live filter input (S) — filters the list as you type
 )
 
 // editField is which task field the detail editor is changing.
@@ -327,6 +332,9 @@ type model struct {
 	optCursor    int        // selected row on the options page
 	pinnedID     string     // when set, only this task is shown (focus mode)
 	showComments bool       // on the pinned focus screen, show the comments list
+	projDelTarget Project   // project pending delete-confirmation
+	ideas        []Idea     // locally-captured ideas (newest first)
+	ideaCursor   int        // selected row in the idea list
 	helpOffset   int        // scroll offset of the help page
 	addProject   Project    // project chosen for the task currently being added
 	recents      []Project  // recently-chosen projects, most recent first (persisted)
@@ -391,6 +399,7 @@ func initialModel() model {
 		queue:    LoadQueue(),
 		recents:  LoadRecentProjects(),
 		settings: LoadSettings(),
+		ideas:    LoadIdeas(),
 		status:   "ready",
 	}
 	m.applyThemeFromSettings()
@@ -580,6 +589,36 @@ func (m *model) updateItem(id string, mutate func(*apiItem), args map[string]any
 	m.deriveAll()
 	m.refreshDetail()
 	m.status = status
+}
+
+// toggleLabel adds the label to a task if absent, removes it if present.
+func (m *model) toggleLabel(id, label string) {
+	it, ok := m.cache.Items[id]
+	if !ok {
+		return
+	}
+	has := false
+	var next []string
+	for _, l := range it.Labels {
+		if l == label {
+			has = true
+			continue
+		}
+		next = append(next, l)
+	}
+	if !has {
+		next = append(next, label)
+	}
+	it.Labels = next
+	m.cache.Items[id] = it
+	m.enqueue(Command{Type: "item_update", UUID: genID(), Args: map[string]any{"id": id, "labels": next}})
+	m.deriveAll()
+	m.refreshDetail()
+	if has {
+		m.status = "removed @" + label
+	} else {
+		m.status = "added @" + label
+	}
 }
 
 func (m *model) setPriorityDisplay(id string, p int) {
@@ -1021,6 +1060,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOnlineSearch(msg)
 		case modeCommand:
 			return m.updateCommand(msg)
+		case modeProjectAdd:
+			return m.updateProjectAdd(msg)
+		case modeProjectDelete:
+			return m.updateProjectDelete(msg)
+		case modeIdeaAdd:
+			return m.updateIdeaAdd(msg)
+		case modeIdeaList:
+			return m.updateIdeaList(msg)
+		case modeFilter:
+			return m.updateFilter(msg)
 		}
 	}
 
@@ -1051,8 +1100,8 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.comments = m.cache.CommentsFor(m.pinnedID)
 			}
 			return m, nil
-		case "a", "A", "p", "!", "o", "f", "t", "T", "d", "D", "R",
-			"/", "?", "O", "b", "h", "1", "2", "3", "4", "5", "6", "0":
+		case "a", "A", "p", "P", "o", "f", "t", "T", "d", "D", "R", "S",
+			"/", "?", ",", "b", "h", "1", "2", "3", "4", "5", "6", "0":
 			m.status = "📌 pinned — type :unpin (then Enter) to switch tasks"
 			return m, nil
 		}
@@ -1079,13 +1128,28 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.CursorEnd()
 		m.input.Focus()
 		return m, textinput.Blink
-	case "P":
+	case "^":
 		// Pin the selected task — focus mode for this session (only this task shows).
 		if t, ok := m.selectedTask(); ok {
 			m.pinnedID = t.ID
 			m.applyView()
 			m.status = "📌 pinned: " + t.Content
 		}
+		return m, nil
+	case "i":
+		// 💡 Catch an idea (works even while pinned).
+		m.mode = modeIdeaAdd
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = "What's the idea?"
+		m.input.SetValue("")
+		m.input.CursorEnd()
+		m.input.Focus()
+		return m, textinput.Blink
+	case "I":
+		// 💡 Browse captured ideas.
+		m.ideas = LoadIdeas()
+		m.ideaCursor = 0
+		m.mode = modeIdeaList
 		return m, nil
 	case "a":
 		// If already viewing a project, add straight into it.
@@ -1186,10 +1250,33 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.CursorEnd()
 		m.input.Focus()
 		return m, textinput.Blink
-	case "O":
+	case ",":
+		// Menu (settings).
 		m.mode = modeOptions
 		m.optCursor = 0
 		m.err = ""
+		return m, nil
+	case "S":
+		// Live filter — applies as you type (supports filter expressions).
+		m.mode = modeFilter
+		m.err = ""
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = "filter: today · @ongoing · #Work & p1 · overdue"
+		m.input.SetValue(m.filter)
+		m.input.CursorEnd()
+		m.input.Focus()
+		return m, textinput.Blink
+	case "O":
+		// Tag/untag the selected task with the ongoing label.
+		if t, ok := m.selectedTask(); ok {
+			m.toggleLabel(t.ID, m.settings.OngoingLabel)
+		}
+		return m, nil
+	case "F":
+		// Tag/untag the selected task with the follow-up label.
+		if t, ok := m.selectedTask(); ok {
+			m.toggleLabel(t.ID, m.settings.FollowupLabel)
+		}
 		return m, nil
 	case "n":
 		var cmd tea.Cmd
@@ -1208,7 +1295,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applyView()
 		m.status = fmt.Sprintf("recently added — %d", len(m.list.Items()))
 		return m, nil
-	case "!":
+	case "P":
 		// Filter by priority — open the priority picker.
 		m.mode = modePriorityPick
 		m.err = ""
@@ -1410,10 +1497,27 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeList
 		return m, nil
-	case "up", "down", "ctrl+p", "ctrl+n", "pgup", "pgdown":
+	case "up", "down", "ctrl+p", "pgup", "pgdown":
 		var cmd tea.Cmd
 		m.projList, cmd = m.projList.Update(msg)
 		return m, cmd
+	case "ctrl+n":
+		// New project.
+		m.mode = modeProjectAdd
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = "new project name"
+		m.input.SetValue("")
+		m.input.CursorEnd()
+		m.input.Focus()
+		return m, textinput.Blink
+	case "ctrl+d":
+		// Delete the selected project (asks first).
+		if it, ok := m.projList.SelectedItem().(projItem); ok &&
+			it.kind != kindSep && it.p.ID != allProjectsID && it.p.ID != "" {
+			m.projDelTarget = it.p
+			m.mode = modeProjectDelete
+		}
+		return m, nil
 	case "backspace":
 		if m.projQuery != "" {
 			r := []rune(m.projQuery)
@@ -1453,6 +1557,142 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projList.Select(0)
 	}
 	return m, nil
+}
+
+// addProjectLocal creates a project optimistically and queues a project_add.
+func (m *model) addProjectLocal(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	temp := "tmp-" + genID()
+	m.cache.Projects[temp] = apiProject{ID: temp, Name: name}
+	m.enqueue(Command{Type: "project_add", UUID: genID(), TempID: temp, Args: map[string]any{"name": name}})
+	m.deriveAll()
+	m.setPickerItems()
+	m.status = "added project: #" + name
+}
+
+// deleteProjectLocal removes a project (and its cached tasks) and queues a delete.
+func (m *model) deleteProjectLocal(p Project) {
+	delete(m.cache.Projects, p.ID)
+	for id, it := range m.cache.Items {
+		if it.ProjectID == p.ID {
+			delete(m.cache.Items, id)
+		}
+	}
+	m.enqueue(Command{Type: "project_delete", UUID: genID(), Args: map[string]any{"id": p.ID}})
+	m.deriveAll()
+	m.setPickerItems()
+	m.status = "deleted project: " + p.Name
+}
+
+func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// cancel: restore the committed filter
+		m.mode = modeList
+		m.input.Blur()
+		m.filter = m.current.filter
+		m.applyView()
+		m.status = m.scopeStatus()
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.input.Value())
+		m.mode = modeList
+		m.input.Blur()
+		return m, m.commit(viewState{filter: val})
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	// Live: apply the typed filter on every keystroke.
+	m.filter = strings.TrimSpace(m.input.Value())
+	m.applyView()
+	m.status = fmt.Sprintf("filter: %s — %d", m.filter, len(m.list.Items()))
+	return m, cmd
+}
+
+func (m model) updateIdeaAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		text := strings.TrimSpace(m.input.Value())
+		m.mode = modeList
+		m.input.Blur()
+		if text != "" {
+			m.ideas = addIdea(m.ideas, text)
+			SaveIdeas(m.ideas)
+			m.status = "💡 idea saved (" + fmt.Sprintf("%d", len(m.ideas)) + ")"
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateIdeaList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "I", "enter":
+		m.mode = modeList
+		return m, nil
+	case "up", "k":
+		if m.ideaCursor > 0 {
+			m.ideaCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.ideaCursor < len(m.ideas)-1 {
+			m.ideaCursor++
+		}
+		return m, nil
+	case "x", "d":
+		// Delete the selected idea.
+		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
+			m.ideas = append(m.ideas[:m.ideaCursor], m.ideas[m.ideaCursor+1:]...)
+			SaveIdeas(m.ideas)
+			if m.ideaCursor >= len(m.ideas) && m.ideaCursor > 0 {
+				m.ideaCursor--
+			}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) updateProjectAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeProjectPick
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		name := strings.TrimPrefix(strings.TrimSpace(m.input.Value()), "#")
+		m.mode = modeProjectPick
+		m.input.Blur()
+		if name != "" {
+			m.addProjectLocal(name)
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateProjectDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.deleteProjectLocal(m.projDelTarget)
+		m.mode = modeProjectPick
+		return m, nil
+	default:
+		m.mode = modeProjectPick
+		return m, nil
+	}
 }
 
 func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1533,7 +1773,7 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Home — close detail and go to the home view.
 		m.mode = modeList
 		return m, m.commit(viewState{})
-	case "P":
+	case "^":
 		// Pin the task being viewed → focus mode.
 		if m.detailID != "" {
 			m.pinnedID = m.detailID
@@ -2013,6 +2253,11 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, header, lipgloss.JoinVertical(lipgloss.Left, rows...))
 	}
 
+	// Idea catcher overlays everything (even a pinned task).
+	if m.mode == modeIdeaAdd || m.mode == modeIdeaList {
+		return m.ideaView(header)
+	}
+
 	// Pinned focus mode: a centered card instead of the list.
 	if m.pinnedID != "" && (m.mode == modeList || m.mode == modeCommand || m.mode == modeCommentAdd) {
 		return m.pinnedFocusView(header)
@@ -2020,18 +2265,27 @@ func (m model) View() string {
 
 	var body string
 	switch m.mode {
-	case modeProjectPick:
+	case modeProjectPick, modeProjectAdd, modeProjectDelete:
+		accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
 		prompt := "Add to which project?"
 		if m.pickIntent == pickView {
 			prompt = "View which project?"
 		}
-		line := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(prompt)
+		line := accent.Render(prompt)
 		if m.projQuery != "" {
 			line += "  " + lipgloss.NewStyle().Foreground(dueColor).Render("filter: "+m.projQuery+"▌")
 		}
-		hint := line
-		help := helpStyle.Render("type to filter · ↑/↓ move · enter select · esc clear/cancel")
-		picker := lipgloss.JoinVertical(lipgloss.Left, hint, m.projList.View(), help)
+		var bottom string
+		switch m.mode {
+		case modeProjectAdd:
+			bottom = promptBox.Render(accent.Render("New project  #") + m.input.View())
+		case modeProjectDelete:
+			bottom = accent.Render("Delete "+m.projDelTarget.Name+" and ALL its tasks?") +
+				lipgloss.NewStyle().Foreground(subColor).Render("   y delete · n cancel")
+		default:
+			bottom = helpStyle.Render("type to filter · ↑/↓ move · enter select · ctrl+n new · ctrl+d delete · esc cancel")
+		}
+		picker := lipgloss.JoinVertical(lipgloss.Left, line, m.projList.View(), bottom)
 		return lipgloss.JoinVertical(lipgloss.Left, header, picker)
 	case modeAdd:
 		proj := m.addProject.Name
@@ -2046,6 +2300,9 @@ func (m model) View() string {
 		body = promptBox.Render(label + m.input.View())
 	case modeOnlineSearch:
 		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("Todoist search (online)  ")
+		body = promptBox.Render(label + m.input.View())
+	case modeFilter:
+		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("Filter  ")
 		body = promptBox.Render(label + m.input.View())
 	case modeCommand:
 		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(": ")
@@ -2073,6 +2330,67 @@ func (m model) View() string {
 	m.list.SetHeight(h)
 	parts = append(parts, m.list.View(), footer)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// ideaView renders the 💡 idea catcher / idea list as a centered yellow card.
+func (m model) ideaView(header string) string {
+	yellow := lipgloss.NewStyle().Foreground(dueColor).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(subColor)
+	body := lipgloss.NewStyle().Foreground(textColor)
+
+	cardW := m.width - 8
+	if cardW > 76 {
+		cardW = 76
+	}
+	if cardW < 30 {
+		cardW = 30
+	}
+	innerW := cardW - 6
+
+	var rows []string
+	if m.mode == modeIdeaAdd {
+		rows = append(rows,
+			yellow.Render("💡  Catch an idea"),
+			"",
+			dim.Render("Saved locally — not sent to Todoist."),
+			"",
+			yellow.Render("› ")+m.input.View(),
+			"",
+			dim.Render("enter save · esc cancel"),
+		)
+	} else { // modeIdeaList
+		rows = append(rows, yellow.Render(fmt.Sprintf("💡  Ideas (%d)", len(m.ideas))), "")
+		if len(m.ideas) == 0 {
+			rows = append(rows, dim.Render("No ideas yet — press i to catch one."))
+		} else {
+			for i, idea := range m.ideas {
+				cur := "  "
+				txtStyle := body
+				if i == m.ideaCursor {
+					cur = yellow.Render("▸ ")
+					txtStyle = lipgloss.NewStyle().Foreground(brightColor).Bold(true)
+				}
+				when := dim.Render(shortTime(idea.At))
+				text := txtStyle.Width(innerW).Render(strings.ReplaceAll(strings.TrimSpace(idea.Text), "\n", " "))
+				rows = append(rows, cur+when, "  "+text, "")
+			}
+			rows = append(rows, dim.Render("j/k move · x delete · esc close"))
+		}
+	}
+
+	card := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(dueColor).
+		Padding(1, 3).
+		Width(cardW).
+		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
+
+	bodyH := m.height - lipgloss.Height(header)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header,
+		lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, card))
 }
 
 // pinnedTask returns the currently pinned task from the cache.
@@ -2209,7 +2527,7 @@ func (m model) optionsView(header string) string {
 	val := lipgloss.NewStyle().Foreground(projectColor)
 	rows := m.optionRows()
 
-	lines := []string{"", "  " + accent.Render("Options"), ""}
+	lines := []string{"", "  " + accent.Render("Menu"), ""}
 	for i, r := range rows {
 		cur := "   "
 		name := dim.Render(fmt.Sprintf("%-22s", r.label))
@@ -2228,7 +2546,7 @@ func (m model) optionsView(header string) string {
 	} else {
 		lines = append(lines, dim.Render("  The ongoing label is what the o key filters on."))
 		lines = append(lines, dim.Render("  Auto-sync pushes queued changes & pulls on a timer."))
-		lines = append(lines, "", helpStyle.Render("  ↑/↓ move · enter edit · esc/O close"))
+		lines = append(lines, "", helpStyle.Render("  ↑/↓ move · enter edit · esc/, close"))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, lines...)...)
 }
@@ -2337,7 +2655,7 @@ func (m model) detailView() string {
 			key.Render("l") + label.Render(" labels  ") +
 			key.Render("e") + label.Render(" name  ") +
 			key.Render("m") + label.Render(" comment  ") +
-			key.Render("P") + label.Render(" pin  ") +
+			key.Render("^") + label.Render(" pin  ") +
 			key.Render("c") + label.Render(" done  ") +
 			key.Render("b") + label.Render(" back")
 		lines = append(lines, actions)
@@ -2379,7 +2697,7 @@ func helpLines() []string {
 		head.Render("  Offline & settings"),
 		row("", "Changes apply instantly to a local cache and queue up."),
 		row("", "Press s to push them; everything works offline until then."),
-		row("O", "Options — ongoing label & background-sync interval"),
+		row(",", "Menu — ongoing/follow-up labels & background-sync interval"),
 		row("X", "Clear data — remove token, cache & queue (asks first)"),
 		"",
 		head.Render("  In the task view"),
@@ -2388,21 +2706,30 @@ func helpLines() []string {
 		row("m", "Add a comment (view existing comments above)"),
 		row("c", "Complete    b/esc  back to the list"),
 		"",
-		head.Render("  Views & filters"),
-		row("p", "View by project (pick from the list; “↩ All Projects” to reset)"),
-		row("P", "Pin — focus on one task; only it shows (this session)"),
+		head.Render("  Tagging"),
+		row("O", "Tag/untag the selected task as ongoing"),
+		row("F", "Tag/untag the selected task as follow-up"),
+		"",
+		head.Render("  Ideas & focus"),
+		row("i", "💡 Catch an idea (saved locally; works even while pinned)"),
+		row("I", "💡 Browse captured ideas (x delete · esc close)"),
+		row("^", "Pin — focus on one task; only it shows (this session)"),
 		row("", "   while pinned: m add comment · v show/hide comments"),
 		row(":unpin", "Release the pin (type : then unpin, Enter)"),
 		row("*", "Toggle light / dark theme"),
-		row("!", "Filter by priority (pick p1–p4 from the menu)"),
-		row("o", "Ongoing — tasks with your ongoing label (set in Options)"),
-		row("f", "Follow-up — tasks with your follow-up label (set in Options)"),
+		"",
+		head.Render("  Views & filters"),
+		row("p", "View by project (pick; ctrl+n new · ctrl+d delete · “↩ All Projects”)"),
+		row("P", "Filter by priority (pick p1–p4 from the menu)"),
+		row("o", "Ongoing — tasks with your ongoing label (set in Menu)"),
+		row("f", "Follow-up — tasks with your follow-up label (set in Menu)"),
 		row("t", "Due today (only)"),
 		row("T", "Due today or earlier (today + overdue)"),
 		row("d", "Deadline is today"),
 		row("D", "Deadline is today or earlier"),
 		row("R", "Recently added — the last 10 tasks you created"),
 		row("/", "Search — plain words; or a local filter (today, #x & p1)"),
+		row("S", "Filter — type a filter that applies live as you type"),
 		row("?", "Online search — full Todoist filter grammar (needs network)"),
 		"",
 		head.Render("  Sort  (press the same number again to reverse)"),
@@ -2543,8 +2870,10 @@ func (m model) footer() string {
 		statusLine = errStyle.Render("⚠ " + m.err)
 	}
 
-	keys := "a add · enter view · c done · x del · P pin · / find · p project · t today · o ongoing · f follow-up · O options · s sync · H help · q quit"
-	right := helpStyle.Render(keys)
+	// "H help" first and accented so it's always visible even if the line clips.
+	keys := "q quit · a add · enter view · c done · x del · ^ pin · i idea · / find · S filter · p project · O/F tag · , menu · s sync"
+	right := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("H help") +
+		helpStyle.Render(" · "+keys)
 	gap := m.width - lipgloss.Width(statusLine) - lipgloss.Width(right)
 	if gap < 1 {
 		return lipgloss.JoinVertical(lipgloss.Left, statusLine, right)
