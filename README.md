@@ -128,10 +128,12 @@ entirely from the keyboard.
 | `A`             | Add a task straight to the **last project** (skip picker)    |
 | `p`             | **View by project** — pick a project to filter the list      |
 | `/`             | Search — plain words (local text search) or a Todoist filter |
+| `b`             | **Back** — return to the previous view (like a browser)      |
+| `h` / `Esc`     | **Home** — back to all tasks / all projects                  |
+| `H` / `?`       | **Help** — open the full keyboard reference                  |
 | `Enter` / `c`   | Complete the selected task                                   |
 | `d`             | Delete the selected task (asks `y`/`n`)                      |
 | `r`             | Sync + refresh                                               |
-| `Esc`           | Clear the active search / project view / filter (or cancel a prompt) |
 | `q` / `Ctrl+C`  | Quit                                                         |
 
 #### In the project picker (used by both `a` and `p`)
@@ -156,7 +158,16 @@ Press `p`, choose a project (type to narrow the list), and the task view filters
 project. You can stack a text search on top with `/`.
 
 To return to the full list, either press `p` again and pick the **"↩ All Projects"**
-entry at the top of the menu, or just press `Esc`.
+entry at the top of the menu, press `h` (Home), or press `Esc`.
+
+### Navigating views
+
+todoui keeps a **browser-style history** of your views (all tasks → a project → a
+search, etc.):
+
+- `b` — **Back** to the previous view.
+- `h` / `Esc` — **Home**, jump straight back to all tasks / all projects.
+- `H` / `?` — open the **Help** page with the full keyboard reference.
 
 ### Add syntax (Todoist quick-add)
 

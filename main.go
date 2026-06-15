@@ -130,7 +130,16 @@ const (
 	modeSearch
 	modeConfirm
 	modeProjectPick
+	modeHelp
 )
+
+// viewState captures everything that defines what the task list shows, so we
+// can push/pop it for browser-style back navigation.
+type viewState struct {
+	filter      string
+	textQuery   string
+	projectView string
+}
 
 // pickIntent distinguishes why the project picker is open.
 type pickIntent int
@@ -146,11 +155,14 @@ type model struct {
 	input       textinput.Model
 	mode        mode
 	pickIntent  pickIntent // what the project picker is for (add vs view)
-	projects    []Project  // all projects (source for the picker)
-	allTasks    []Task     // full set from the last server load
-	filter      string     // active server-side Todoist filter
-	textQuery   string     // local case-insensitive text search over loaded tasks
-	projectView string     // local filter: show only this project (display name, e.g. "#Bills")
+	projects     []Project  // all projects (source for the picker)
+	allTasks     []Task     // full set from the last server load
+	filter       string     // active server-side Todoist filter (working value)
+	textQuery    string     // local case-insensitive text search (working value)
+	projectView  string     // local project filter, display name e.g. "#Bills" (working value)
+	loadedFilter string     // the server filter that allTasks currently reflects
+	current      viewState  // the committed view currently shown
+	history      []viewState // back-stack of previously committed views
 	addProject  Project    // project chosen for the task currently being added
 	lastProject Project // most recently used project (remembered across runs)
 	status      string
@@ -309,6 +321,58 @@ func (m *model) applyView() {
 	m.list.SetItems(items)
 }
 
+// scopeStatus describes the current view and its visible count.
+func (m *model) scopeStatus() string {
+	n := len(m.list.Items())
+	switch {
+	case m.filter != "":
+		return fmt.Sprintf("filter: %s — %d", m.filter, n)
+	case m.projectView != "" && m.textQuery != "":
+		return fmt.Sprintf("%s · “%s” — %d", m.projectView, m.textQuery, n)
+	case m.projectView != "":
+		return fmt.Sprintf("%s — %d", m.projectView, n)
+	case m.textQuery != "":
+		return fmt.Sprintf("“%s” — %d", m.textQuery, n)
+	default:
+		return fmt.Sprintf("%d tasks", n)
+	}
+}
+
+// applyState sets the working view variables and refreshes the list, reloading
+// from the server only when the needed server filter differs from what's loaded.
+func (m *model) applyState(s viewState) tea.Cmd {
+	m.filter, m.textQuery, m.projectView = s.filter, s.textQuery, s.projectView
+	if s.filter != m.loadedFilter {
+		m.loading = true
+		return loadTasks(s.filter)
+	}
+	m.applyView()
+	m.status = m.scopeStatus()
+	return nil
+}
+
+// commit navigates to a new view, pushing the current one onto the back-stack.
+func (m *model) commit(s viewState) tea.Cmd {
+	if s == m.current {
+		return m.applyState(s) // no-op navigation, just refresh
+	}
+	m.history = append(m.history, m.current)
+	m.current = s
+	return m.applyState(s)
+}
+
+// goBack pops the back-stack and restores the previous view.
+func (m *model) goBack() tea.Cmd {
+	if len(m.history) == 0 {
+		m.status = "nothing to go back to"
+		return nil
+	}
+	s := m.history[len(m.history)-1]
+	m.history = m.history[:len(m.history)-1]
+	m.current = s
+	return m.applyState(s)
+}
+
 // isFilterExpr reports whether a search string looks like a Todoist filter
 // expression (operators or known keywords) rather than plain search text.
 func isFilterExpr(s string) bool {
@@ -350,9 +414,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tasksLoadedMsg:
 		m.loading = false
 		m.filter = msg.filter
+		m.loadedFilter = msg.filter
 		m.allTasks = msg.tasks
 		m.applyView()
-		m.status = fmt.Sprintf("%d tasks", len(m.list.Items()))
+		m.status = m.scopeStatus()
 		return m, nil
 
 	case actionMsg:
@@ -375,6 +440,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirm(msg)
 		case modeProjectPick:
 			return m.updateProjectPick(msg)
+		case modeHelp:
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.mode = modeList // any other key closes help
+			return m, nil
 		}
 	}
 
@@ -445,23 +516,14 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.status = "refreshing…"
 		return m, tea.Sequence(syncCmd(), loadTasks(m.filter))
-	case "esc":
-		if m.filter == "" && (m.textQuery != "" || m.projectView != "") {
-			// purely local narrowing — clear instantly, no reload needed
-			m.textQuery = ""
-			m.projectView = ""
-			m.applyView()
-			m.status = fmt.Sprintf("%d tasks", len(m.list.Items()))
-			return m, nil
-		}
-		if m.filter != "" || m.textQuery != "" || m.projectView != "" {
-			m.filter = ""
-			m.textQuery = ""
-			m.projectView = ""
-			m.loading = true
-			m.status = "cleared"
-			return m, loadTasks("")
-		}
+	case "b":
+		return m, m.goBack()
+	case "h", "esc":
+		// Home — back to the all-projects / all-tasks view (undoable with b).
+		return m, m.commit(viewState{})
+	case "H", "?":
+		m.mode = modeHelp
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
@@ -524,17 +586,9 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pickIntent == pickView {
 			m.mode = modeList
 			if it.p.ID == allProjectsID {
-				// Back to all projects.
-				m.projectView = ""
-				m.applyView()
-				m.status = fmt.Sprintf("all projects — %d", len(m.list.Items()))
-				return m, nil
+				return m, m.commit(viewState{}) // back to all projects
 			}
-			// Filter the current view to the chosen project (local).
-			m.projectView = it.p.Name
-			m.applyView()
-			m.status = fmt.Sprintf("%s — %d", it.p.Name, len(m.list.Items()))
-			return m, nil
+			return m, m.commit(viewState{projectView: it.p.Name})
 		}
 		// pickAdd: remember the project and move to the add input.
 		m.addProject = it.p
@@ -556,6 +610,12 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = modeList
 		m.input.Blur()
+		// restore the committed view (cancels any live search-preview narrowing)
+		m.textQuery = m.current.textQuery
+		m.projectView = m.current.projectView
+		m.filter = m.current.filter
+		m.applyView()
+		m.status = m.scopeStatus()
 		return m, nil
 	case "enter":
 		val := strings.TrimSpace(m.input.Value())
@@ -573,21 +633,10 @@ func (m model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			if isFilterExpr(val) {
 				// power query → server-side Todoist filter
-				m.filter = val
-				m.textQuery = ""
-				m.loading = true
-				m.status = "filter: " + val
-				return m, loadTasks(val)
+				return m, m.commit(viewState{filter: val})
 			}
-			// plain words → local text search over loaded tasks
-			m.textQuery = val
-			m.applyView()
-			if val == "" {
-				m.status = fmt.Sprintf("%d tasks", len(m.list.Items()))
-			} else {
-				m.status = fmt.Sprintf("search “%s” — %d", val, len(m.list.Items()))
-			}
-			return m, nil
+			// plain words → local text search, kept within any active project view
+			return m, m.commit(viewState{projectView: m.current.projectView, textQuery: val})
 		}
 	}
 	var cmd tea.Cmd
@@ -642,6 +691,10 @@ func (m model) View() string {
 	}
 	header := lipgloss.JoinHorizontal(lipgloss.Center, title, statusStyle.Render(scope))
 
+	if m.mode == modeHelp {
+		return lipgloss.JoinVertical(lipgloss.Left, header, m.helpView())
+	}
+
 	var body string
 	switch m.mode {
 	case modeProjectPick:
@@ -681,11 +734,55 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, listView, footer)
 }
 
+// helpView renders the full-screen help page (opened with H or ?).
+func (m model) helpView() string {
+	key := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	head := lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8")).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(subColor)
+
+	row := func(k, desc string) string {
+		return "  " + key.Render(fmt.Sprintf("%-12s", k)) + dim.Render(desc)
+	}
+
+	lines := []string{
+		"",
+		head.Render("  Navigation"),
+		row("↑/↓ j/k", "Move selection"),
+		row("pgup/pgdn", "Page through the list"),
+		row("b", "Back — return to the previous view (like a browser)"),
+		row("h / esc", "Home — back to all tasks / all projects"),
+		row("q ctrl+c", "Quit"),
+		"",
+		head.Render("  Tasks"),
+		row("a", "Add a task — choose the project first"),
+		row("A", "Add a task straight to the last-used project"),
+		row("enter / c", "Complete the selected task"),
+		row("d", "Delete the selected task (asks y/n)"),
+		row("r", "Sync + refresh from Todoist"),
+		"",
+		head.Render("  Views"),
+		row("p", "View by project (pick from the list; “↩ All Projects” to reset)"),
+		row("/", "Search — plain words search locally; filters run server-side"),
+		"",
+		head.Render("  Search tips"),
+		row("plain text", "anvaya, pay globe — instant local search of name/project/labels"),
+		row("filters", "today | overdue, #Personal & p1, @follow-up — Todoist syntax"),
+		"",
+		head.Render("  Add syntax (natural language)"),
+		row("example", "Pay bill @bills-payment tomorrow 9am p1"),
+		dim.Render("              dates, @labels and p1–p4 are parsed by Todoist;"),
+		dim.Render("              the project comes from the picker."),
+		"",
+		dim.Render("  Press any key to close this help."),
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
 func (m model) footer() string {
 	if m.err != "" {
 		return errStyle.Render("⚠ " + m.err)
 	}
-	keys := "a add · A add→last · p project · / search · enter/c done · d del · r refresh · q quit"
+	keys := "a add · p project · / search · b back · h home · enter/c done · d del · r refresh · H help · q quit"
 	st := m.status
 	if m.loading {
 		st = "⟳ " + st

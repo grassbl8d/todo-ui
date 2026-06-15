@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -270,6 +271,92 @@ func TestViewByProject(t *testing.T) {
 	}
 	if got := len(m.list.Items()); got != 3 {
 		t.Fatalf("after clear want 3 tasks, got %d", got)
+	}
+}
+
+func TestBackAndHomeNavigation(t *testing.T) {
+	m := initialModel()
+	m.lastProject = Project{}
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.projList.SetSize(100, 36)
+	nm, _ := m.Update(projectsLoadedMsg{projects: []Project{{ID: "b", Name: "#Bills"}}})
+	m = nm.(model)
+	nm, _ = m.Update(tasksLoadedMsg{tasks: []Task{
+		{ID: "1", Project: "#Bills", Content: "Pay Globe anvaya"},
+		{ID: "2", Project: "#Bills", Content: "Pay Cignal"},
+		{ID: "3", Project: "#Personal", Content: "Read a book"},
+	}})
+	m = nm.(model)
+
+	// View #Bills
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.projectView != "#Bills" || len(m.list.Items()) != 2 {
+		t.Fatalf("expected #Bills view with 2 items, got %q/%d", m.projectView, len(m.list.Items()))
+	}
+
+	// Then search "anvaya" within it
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = nm.(model)
+	for _, r := range "anvaya" {
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = nm.(model)
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.textQuery != "anvaya" || m.projectView != "#Bills" || len(m.list.Items()) != 1 {
+		t.Fatalf("search-in-project: got query=%q project=%q items=%d", m.textQuery, m.projectView, len(m.list.Items()))
+	}
+
+	// Back → returns to #Bills view (no search)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = nm.(model)
+	if m.textQuery != "" || m.projectView != "#Bills" || len(m.list.Items()) != 2 {
+		t.Fatalf("after back: query=%q project=%q items=%d", m.textQuery, m.projectView, len(m.list.Items()))
+	}
+
+	// Back again → all tasks
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = nm.(model)
+	if m.projectView != "" || len(m.list.Items()) != 3 {
+		t.Fatalf("after second back: project=%q items=%d", m.projectView, len(m.list.Items()))
+	}
+
+	// Home from a project view jumps straight to all tasks
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	m = nm.(model)
+	if m.projectView != "" || len(m.list.Items()) != 3 {
+		t.Fatalf("home: project=%q items=%d", m.projectView, len(m.list.Items()))
+	}
+}
+
+func TestHelpPageToggle(t *testing.T) {
+	m := initialModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
+	m = nm.(model)
+	if m.mode != modeHelp {
+		t.Fatal("H should open the help page")
+	}
+	if !strings.Contains(m.View(), "Navigation") {
+		t.Fatal("help view should render its sections")
+	}
+	// any key closes
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if nm.(model).mode != modeList {
+		t.Fatal("any key should close help")
 	}
 }
 
