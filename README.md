@@ -153,7 +153,10 @@ Press `Esc` to clear and return to all tasks.
 ### Viewing one project
 
 Press `p`, choose a project (type to narrow the list), and the task view filters to that
-project. You can stack a text search on top with `/`. Press `Esc` to clear.
+project. You can stack a text search on top with `/`.
+
+To return to the full list, either press `p` again and pick the **"↩ All Projects"**
+entry at the top of the menu, or just press `Esc`.
 
 ### Add syntax (Todoist quick-add)
 

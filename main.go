@@ -146,6 +146,7 @@ type model struct {
 	input       textinput.Model
 	mode        mode
 	pickIntent  pickIntent // what the project picker is for (add vs view)
+	projects    []Project  // all projects (source for the picker)
 	allTasks    []Task     // full set from the last server load
 	filter      string     // active server-side Todoist filter
 	textQuery   string     // local case-insensitive text search over loaded tasks
@@ -342,11 +343,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case projectsLoadedMsg:
-		items := make([]list.Item, len(msg.projects))
-		for i, p := range msg.projects {
-			items[i] = projItem{p}
-		}
-		m.projList.SetItems(items)
+		m.projects = msg.projects
+		m.setPickerItems()
 		return m, nil
 
 	case tasksLoadedMsg:
@@ -395,6 +393,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeProjectPick
 		m.pickIntent = pickAdd
 		m.err = ""
+		m.setPickerItems()
 		m.selectLastProject()
 		return m, nil
 	case "p":
@@ -402,6 +401,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeProjectPick
 		m.pickIntent = pickView
 		m.err = ""
+		m.setPickerItems()
 		m.selectLastProject()
 		return m, nil
 	case "A":
@@ -409,6 +409,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.lastProject.ID == "" {
 			m.mode = modeProjectPick
 			m.pickIntent = pickAdd
+			m.setPickerItems()
 			m.selectLastProject()
 			return m, nil
 		}
@@ -474,6 +475,22 @@ func syncCmd() tea.Cmd {
 	}
 }
 
+// allProjectsID is the sentinel for the "All Projects" picker entry (view mode).
+const allProjectsID = "__all__"
+
+// setPickerItems rebuilds the project picker list. In view mode it prepends an
+// "All Projects" entry so you can clear the project filter from the menu.
+func (m *model) setPickerItems() {
+	var items []list.Item
+	if m.pickIntent == pickView {
+		items = append(items, projItem{Project{ID: allProjectsID, Name: "↩ All Projects"}})
+	}
+	for _, p := range m.projects {
+		items = append(items, projItem{p})
+	}
+	m.projList.SetItems(items)
+}
+
 // selectLastProject moves the picker cursor onto the remembered project.
 func (m *model) selectLastProject() {
 	if m.lastProject.ID == "" {
@@ -505,8 +522,15 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.pickIntent == pickView {
-			// Filter the current view to the chosen project (local).
 			m.mode = modeList
+			if it.p.ID == allProjectsID {
+				// Back to all projects.
+				m.projectView = ""
+				m.applyView()
+				m.status = fmt.Sprintf("all projects — %d", len(m.list.Items()))
+				return m, nil
+			}
+			// Filter the current view to the chosen project (local).
 			m.projectView = it.p.Name
 			m.applyView()
 			m.status = fmt.Sprintf("%s — %d", it.p.Name, len(m.list.Items()))

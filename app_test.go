@@ -61,6 +61,7 @@ func TestKeyOpensProjectPicker(t *testing.T) {
 
 func TestProjectPickThenAdd(t *testing.T) {
 	m := initialModel()
+	m.lastProject = Project{} // deterministic: ignore any persisted last project
 	m.width, m.height = 100, 40
 	m.projList.SetSize(100, 36)
 	// load some projects
@@ -199,6 +200,7 @@ func TestLocalTextSearchFiltersTasks(t *testing.T) {
 
 func TestViewByProject(t *testing.T) {
 	m := initialModel()
+	m.lastProject = Project{} // deterministic
 	m.width, m.height = 100, 40
 	m.list.SetSize(100, 36)
 	m.projList.SetSize(100, 36)
@@ -220,7 +222,9 @@ func TestViewByProject(t *testing.T) {
 	if m.mode != modeProjectPick || m.pickIntent != pickView {
 		t.Fatal("'p' should open the picker in view intent")
 	}
-	// select first project (#Bills)
+	// index 0 is the "All Projects" entry; move down to #Bills
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(model)
 	if m.mode != modeList {
@@ -235,7 +239,30 @@ func TestViewByProject(t *testing.T) {
 	if got := len(m.list.Items()); got != 2 {
 		t.Fatalf("want 2 #Bills tasks, got %d", got)
 	}
-	// esc clears the project view
+
+	// Reopen the picker and choose "All Projects" (index 0) to go back.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = nm.(model)
+	m.projList.Select(0) // ensure cursor on the All Projects entry
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.projectView != "" {
+		t.Fatalf("selecting All Projects should clear projectView, got %q", m.projectView)
+	}
+	if got := len(m.list.Items()); got != 3 {
+		t.Fatalf("All Projects should show all 3 tasks, got %d", got)
+	}
+
+	// Re-apply a project view, then verify Esc also clears it.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.projectView != "#Bills" {
+		t.Fatalf("expected #Bills view, got %q", m.projectView)
+	}
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm.(model)
 	if m.projectView != "" {
