@@ -139,6 +139,7 @@ entirely from the keyboard.
 | `P`             | **Filter by priority** — pick p1–p4 from a menu              |
 | `o`             | **Ongoing** — tasks with your ongoing label (default `@ongoing`) |
 | `f`             | **Follow-up** — tasks with your follow-up label (default `@ffup`) |
+| `t`             | **Due today** (only)                                        |
 | `T`             | **Due today or earlier** (today + overdue)                  |
 | `d`             | **Deadline is today**                                       |
 | `D`             | **Deadline is today or earlier**                            |

@@ -791,7 +791,15 @@ func TestDeadlineAndTodayFilters(t *testing.T) {
 		{ID: "5", Content: "no dates"},
 	}})
 	m = nm.(model)
-	// T → due today or overdue (tasks 1,2)
+	// t → due today only (task 1)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m = nm.(model)
+	if got := len(m.list.Items()); got != 1 {
+		t.Fatalf("t should show 1 due-today task, got %d", got)
+	}
+	// home, then T → due today or overdue (tasks 1,2)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	m = nm.(model)
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
 	m = nm.(model)
 	if got := len(m.list.Items()); got != 2 {

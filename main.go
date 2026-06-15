@@ -1047,6 +1047,9 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		// Follow-up — show all tasks tagged with the configured label.
 		return m, m.commit(viewState{filter: "@" + m.settings.FollowupLabel})
+	case "t":
+		// Tasks due today only.
+		return m, m.commit(viewState{filter: "today"})
 	case "T":
 		// Tasks due today and earlier (today + overdue).
 		return m, m.commit(viewState{filter: "today | overdue"})
@@ -2048,6 +2051,7 @@ func helpLines() []string {
 		row("P", "Filter by priority (pick p1–p4 from the menu)"),
 		row("o", "Ongoing — tasks with your ongoing label (set in Options)"),
 		row("f", "Follow-up — tasks with your follow-up label (set in Options)"),
+		row("t", "Due today (only)"),
 		row("T", "Due today or earlier (today + overdue)"),
 		row("d", "Deadline is today"),
 		row("D", "Deadline is today or earlier"),
@@ -2180,7 +2184,7 @@ func (m model) footer() string {
 		statusLine = errStyle.Render("⚠ " + m.err)
 	}
 
-	keys := "a add · enter view · c done · x del · / find · ? online · p project · T today · o ongoing · f follow-up · O options · s sync · H help · q quit"
+	keys := "a add · enter view · c done · x del · / find · ? online · p project · t today · o ongoing · f follow-up · O options · s sync · H help · q quit"
 	right := helpStyle.Render(keys)
 	gap := m.width - lipgloss.Width(statusLine) - lipgloss.Width(right)
 	if gap < 1 {
