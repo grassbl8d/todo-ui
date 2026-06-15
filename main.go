@@ -2457,7 +2457,7 @@ func (m model) helpView() string {
 			pos = fmt.Sprintf("%d%%", off*100/m.maxHelpOffset())
 		}
 	}
-	hint := helpStyle.Render(fmt.Sprintf("  j/k ↑/↓ scroll · %s · any other key closes", pos))
+	hint := helpStyle.Render(fmt.Sprintf("  j/k ↑/↓ scroll · %s · * theme · any other key closes", pos))
 
 	return lipgloss.JoinVertical(lipgloss.Left, append(window, hint)...)
 }
