@@ -23,12 +23,12 @@ var version = "v0.1.7"
 
 // Theme holds every colour the UI uses, so we can swap light/dark at runtime.
 type Theme struct {
-	Accent, Dim, Sub        lipgloss.Color
-	Text, Bright            lipgloss.Color
-	P1, P2, P3, P4          lipgloss.Color
-	Project, Due, Deadline  lipgloss.Color
-	Labels, Warn            lipgloss.Color
-	TitleFg, TitleBg        lipgloss.Color
+	Accent, Dim, Sub       lipgloss.Color
+	Text, Bright           lipgloss.Color
+	P1, P2, P3, P4         lipgloss.Color
+	Project, Due, Deadline lipgloss.Color
+	Labels, Warn           lipgloss.Color
+	TitleFg, TitleBg       lipgloss.Color
 }
 
 var darkTheme = Theme{
@@ -90,21 +90,35 @@ func init() { applyTheme(darkTheme) } // sensible default before settings load
 
 // ---------- list item ----------
 
-type taskItem struct{ t Task }
+type taskItem struct {
+	t     Task
+	sep   bool   // a non-selectable separator row (e.g. "completed")
+	label string // separator label
+}
 
 func (i taskItem) FilterValue() string {
+	if i.sep {
+		return ""
+	}
 	return i.t.Content + " " + i.t.Project + " " + i.t.Labels
 }
 
 // taskDelegate renders each task across two lines with a priority-coloured marker.
 type taskDelegate struct{}
 
-func (d taskDelegate) Height() int                             { return 2 }
-func (d taskDelegate) Spacing() int                            { return 1 }
-func (d taskDelegate) Update(tea.Msg, *list.Model) tea.Cmd     { return nil }
+func (d taskDelegate) Height() int                         { return 2 }
+func (d taskDelegate) Spacing() int                        { return 1 }
+func (d taskDelegate) Update(tea.Msg, *list.Model) tea.Cmd { return nil }
 func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	it, ok := item.(taskItem)
 	if !ok {
+		return
+	}
+	if it.sep {
+		// Read-only divider between active and completed tasks.
+		bar := strings.Repeat("─", 14)
+		fmt.Fprintf(w, "%s\n",
+			lipgloss.NewStyle().Foreground(dimColor).Render("  "+bar+" "+it.label+" "+bar))
 		return
 	}
 	t := it.t
@@ -113,6 +127,28 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	pc := prioColors[t.Priority]
 	if pc == "" {
 		pc = prioColors["p4"]
+	}
+
+	// Completed tasks render dimmed with a ✓ and struck-through text (read-only).
+	if t.Done {
+		mk := "  "
+		ts := lipgloss.NewStyle().Foreground(subColor).Strikethrough(true)
+		if selected {
+			mk = lipgloss.NewStyle().Foreground(dueColor).Bold(true).Render("▌ ")
+			ts = ts.Foreground(textColor)
+		}
+		check := lipgloss.NewStyle().Foreground(dueColor).Render("✓")
+		var meta []string
+		if t.Project != "" {
+			meta = append(meta, t.Project)
+		}
+		if strings.TrimSpace(t.Labels) != "" {
+			meta = append(meta, t.Labels)
+		}
+		line1 := fmt.Sprintf("%s%s  %s", mk, check, ts.Render(t.Content))
+		line2 := "    " + lipgloss.NewStyle().Foreground(dimColor).Render(strings.Join(meta, "  ·  "))
+		fmt.Fprintf(w, "%s\n%s", line1, line2)
+		return
 	}
 
 	marker := "  "
@@ -215,25 +251,32 @@ const (
 	modeConfirm
 	modeProjectPick
 	modeHelp
-	modeDetail       // viewing a single task
-	modeDetailEdit   // editing one field of the task in detail view
-	modeCommentAdd   // writing a new comment in the detail view
-	modePriorityPick // choosing a priority to filter by
-	modeOnboard      // first-run / invalid-token: prompt for the API token
-	modeOnboardLabel // first-run: choose the "ongoing" label
-	modeClearData    // confirm clearing token + cache + queue
-	modeOptions      // settings page
-	modeOptionsEdit  // editing one setting
-	modeOnlineSearch  // online Todoist filter query (?)
-	modeCommand       // ":" command line (e.g. :unpin)
-	modeProjectAdd    // entering a new project name (in the picker)
-	modeProjectDelete // confirm deleting a project (in the picker)
-	modeIdeaAdd       // 💡 capture a new idea (overlay)
-	modeIdeaList      // 💡 browse captured ideas
-	modeDeadlinePick  // pick a deadline from quick options
-	modeTimezone      // searchable IANA timezone picker
-	modePalette       // ` quick-action palette: search & run any command
-	modeAbout         // ~ about screen (logo + contributors)
+	modeDetail            // viewing a single task
+	modeDetailEdit        // editing one field of the task in detail view
+	modeCommentAdd        // writing a new comment in the detail view
+	modePriorityPick      // choosing a priority to filter by
+	modeOnboard           // first-run / invalid-token: prompt for the API token
+	modeOnboardLabel      // first-run: choose the "ongoing" label
+	modeClearData         // confirm clearing token + cache + queue
+	modeOptions           // settings page
+	modeOptionsEdit       // editing one setting
+	modeOnlineSearch      // online Todoist filter query (?)
+	modeCommand           // ":" command line (e.g. :unpin)
+	modeProjectAdd        // entering a new project name (in the picker)
+	modeProjectDelete     // confirm deleting a project (in the picker)
+	modeIdeaAdd           // 💡 capture a new idea (overlay)
+	modeIdeaList          // 💡 browse captured ideas
+	modeIdeaRename        // 💡 rename the selected idea
+	modeDeadlinePick      // pick a deadline from quick options
+	modeTimezone          // searchable IANA timezone picker
+	modePalette           // ` quick-action palette: search & run any command
+	modeAbout             // ~ about screen (logo + contributors)
+	modeMindMap           // 🗺 navigating an idea's mind map
+	modeMindEdit          // 🗺 typing a mind-map node's text
+	modeMindHelp          // 🗺 dedicated keyboard help for mind-map mode
+	modeMindPalette       // 🗺 ` quick-action palette for mind-map mode
+	modeMindConfirmDelete // 🗺 y/n confirm before deleting a node
+	modeMindConfirmUnbind // 🗺 y/n confirm before unbinding the project
 )
 
 // deadlineOptions are the quick picks shown when setting a deadline.
@@ -306,67 +349,76 @@ func (s sortMode) label() string {
 type pickIntent int
 
 const (
-	pickAdd  pickIntent = iota // choosing a project to add a task into
-	pickView                   // choosing a project to filter the view by
+	pickAdd       pickIntent = iota // choosing a project to add a task into
+	pickView                        // choosing a project to filter the view by
+	pickMindTasks                   // choosing a project for a mind map's task nodes
 )
 
 type model struct {
-	list        list.Model
-	projList    list.Model
-	input       textinput.Model
-	mode        mode
-	pickIntent  pickIntent // what the project picker is for (add vs view)
-	projects     []Project  // all projects (source for the picker)
-	allTasks     []Task     // full set from the last server load
-	filter       string     // active server-side Todoist filter (working value)
-	textQuery    string     // local case-insensitive text search (working value)
-	projectView  string     // local project filter, display name e.g. "#Bills" (working value)
-	priorityView string     // local priority filter "p1".."p4" (working value)
-	prioCursor   int        // cursor in the priority picker
-	cache        *Cache     // local offline-first snapshot
-	queue        []Command  // pending Sync API commands (flushed on sync)
-	syncing      bool       // a sync is in flight
-	online       bool       // last sync succeeded
-	current      viewState  // the committed view currently shown
-	history      []viewState // back-stack of previously committed views
-	sortMode     sortMode   // current ordering of the task list
-	sortDesc     bool       // reverse the current ordering
-	detailTask   Task       // task shown in the detail view
-	detailID     string     // id of the task in the detail view
-	editField    editField  // which field the detail editor is editing
-	comments     []Comment  // comments for the task in the detail view
-	commentErr   string     // error from the last comment fetch/post
-	recentView   bool       // showing the recently-added tasks
-	recentIDs    []string   // task IDs in recently-added order
-	onlineView   bool       // showing online (server filter) search results
-	onlineResults []Task    // results of the last online search
-	onlineQuery  string     // last online query (for the header)
-	searching    bool       // online search in flight
-	onboardErr   string     // error shown on the onboarding screen
-	checking     bool       // validating the token
-	projQuery    string     // type-to-filter text in the project picker
-	settings     Settings   // user preferences (ongoing label, sync interval)
-	tickGen      int        // generation guard for the auto-sync ticker
-	optCursor    int        // selected row on the options page
-	tzAll        []string   // all selectable IANA zone names (loaded on first open)
-	tzQuery      string     // type-to-filter text in the timezone picker
-	tzCursor     int        // selected row in the timezone picker
-	palQuery     string     // type-to-filter text in the ` quick-action palette
-	palCursor    int        // selected row in the quick-action palette
-	pinnedID     string     // when set, only this task is shown (focus mode)
-	showComments bool       // on the pinned focus screen, show the comments list
-	projDelTarget Project   // project pending delete-confirmation
-	ideas        []Idea     // locally-captured ideas (newest first)
-	ideaCursor   int        // selected row in the idea list
-	dlCursor     int        // selected row in the deadline picker
-	homeFlash    bool       // brief highlight of the home/clear hint when pressed
-	helpOffset   int        // scroll offset of the help page
-	addProject   Project    // project chosen for the task currently being added
-	recents      []Project  // recently-chosen projects, most recent first (persisted)
-	status       string
-	err          string
-	width        int
-	height       int
+	list          list.Model
+	projList      list.Model
+	input         textinput.Model
+	mode          mode
+	pickIntent    pickIntent  // what the project picker is for (add vs view)
+	projects      []Project   // all projects (source for the picker)
+	allTasks      []Task      // full set from the last server load
+	filter        string      // active server-side Todoist filter (working value)
+	textQuery     string      // local case-insensitive text search (working value)
+	projectView   string      // local project filter, display name e.g. "#Bills" (working value)
+	priorityView  string      // local priority filter "p1".."p4" (working value)
+	prioCursor    int         // cursor in the priority picker
+	cache         *Cache      // local offline-first snapshot
+	queue         []Command   // pending Sync API commands (flushed on sync)
+	syncing       bool        // a sync is in flight
+	syncBg        bool        // the in-flight sync is a background auto-sync
+	spinFrame     int         // animation frame for the sync progress bar
+	completedView int         // 0 active only · 1 active+completed · 2 completed only
+	online        bool        // last sync succeeded
+	current       viewState   // the committed view currently shown
+	history       []viewState // back-stack of previously committed views
+	sortMode      sortMode    // current ordering of the task list
+	sortDesc      bool        // reverse the current ordering
+	detailTask    Task        // task shown in the detail view
+	detailID      string      // id of the task in the detail view
+	editField     editField   // which field the detail editor is editing
+	comments      []Comment   // comments for the task in the detail view
+	commentErr    string      // error from the last comment fetch/post
+	recentView    bool        // showing the recently-added tasks
+	recentIDs     []string    // task IDs in recently-added order
+	onlineView    bool        // showing online (server filter) search results
+	onlineResults []Task      // results of the last online search
+	onlineQuery   string      // last online query (for the header)
+	searching     bool        // online search in flight
+	onboardErr    string      // error shown on the onboarding screen
+	checking      bool        // validating the token
+	projQuery     string      // type-to-filter text in the project picker
+	settings      Settings    // user preferences (ongoing label, sync interval)
+	tickGen       int         // generation guard for the auto-sync ticker
+	optCursor     int         // selected row on the options page
+	tzAll         []string    // all selectable IANA zone names (loaded on first open)
+	tzQuery       string      // type-to-filter text in the timezone picker
+	tzCursor      int         // selected row in the timezone picker
+	palQuery      string      // type-to-filter text in the ` quick-action palette
+	palCursor     int         // selected row in the quick-action palette
+	pinnedID      string      // when set, only this task is shown (focus mode)
+	showComments  bool        // on the pinned focus screen, show the comments list
+	projDelTarget Project     // project pending delete-confirmation
+	ideas         []Idea      // locally-captured ideas (newest first)
+	ideaCursor    int         // selected row in the idea list
+	mindIdea      int         // index into ideas of the mind map being edited
+	mindCursor    int         // selected row in the flattened mind-map tree
+	mindEditNode  *MindNode   // node whose text is being edited (nil = the root idea)
+	mindEditNew   bool        // the edited node was just created (esc/empty discards it)
+	mindDelTarget *MindNode   // node pending delete-confirmation in the mind map
+	dlCursor      int         // selected row in the deadline picker
+	homeFlash     bool        // brief highlight of the home/clear hint when pressed
+	helpOffset    int         // scroll offset of the help page
+	addProject    Project     // project chosen for the task currently being added
+	recents       []Project   // recently-chosen projects, most recent first (persisted)
+	status        string
+	err           string
+	width         int
+	height        int
 }
 
 // messages
@@ -507,10 +559,85 @@ func syncNowCmd(syncToken string, queue []Command) tea.Cmd {
 	}
 }
 
+// startSync kicks off a foreground sync (flush queue + pull) with the animated
+// progress bar. No-op (nil cmd) if a sync is already running.
+func (m *model) startSync() tea.Cmd {
+	if m.syncing {
+		return nil
+	}
+	m.syncing = true
+	m.syncBg = false
+	m.spinFrame = 0
+	m.status = "syncing…"
+	return tea.Batch(syncNowCmd(m.cache.SyncToken, m.queue), spinnerTick())
+}
+
+// syncCyan is the accent used for the in-progress sync bar.
+var syncCyan = lipgloss.Color("#22d3ee")
+
+// spinnerTickMsg advances the sync progress-bar animation.
+type spinnerTickMsg struct{}
+
+// spinnerTick schedules the next animation frame.
+func spinnerTick() tea.Cmd {
+	return tea.Tick(90*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+// syncBar renders a full-width indeterminate progress bar: a solid cyan block
+// sweeping across a dim track, with a label. Shown only while a sync is running.
+func (m model) syncBar() string {
+	label := " ⟳ syncing "
+	if m.syncBg {
+		label = " ⟳ auto-sync "
+	}
+	labelStyled := lipgloss.NewStyle().Foreground(syncCyan).Bold(true).Render(label)
+	barW := m.width - lipgloss.Width(label)
+	if barW < 4 {
+		return labelStyled
+	}
+	seg := barW / 4
+	if seg < 3 {
+		seg = 3
+	}
+	// Bounce the block back and forth across the track.
+	span := barW - seg
+	if span < 1 {
+		span = 1
+	}
+	p := m.spinFrame % (2 * span)
+	if p > span {
+		p = 2*span - p
+	}
+	track := lipgloss.NewStyle().Background(dimColor)
+	block := lipgloss.NewStyle().Background(syncCyan)
+	sp := func(n int) string {
+		if n <= 0 {
+			return ""
+		}
+		return strings.Repeat(" ", n)
+	}
+	bar := track.Render(sp(p)) + block.Render(sp(seg)) + track.Render(sp(barW-seg-p))
+	return labelStyled + bar
+}
+
 func onlineSearchCmd(query string) tea.Cmd {
 	return func() tea.Msg {
 		items, err := FilterTasks(query)
 		return onlineResultMsg{query: query, items: items, err: err}
+	}
+}
+
+// completedFetchedMsg carries server-side completed tasks for the completed view.
+type completedFetchedMsg struct {
+	items []apiItem
+	err   error
+}
+
+// fetchCompletedCmd pulls completed tasks for a project from Todoist.
+func fetchCompletedCmd(projectID string) tea.Cmd {
+	return func() tea.Msg {
+		items, err := FetchCompletedTasks(projectID)
+		return completedFetchedMsg{items: items, err: err}
 	}
 }
 
@@ -550,7 +677,9 @@ func (m *model) pendingNote() string {
 
 // ---------- optimistic local mutations (queued for sync) ----------
 
-func (m *model) addTask(text string, proj Project) {
+// addTask optimistically adds a task and returns its temporary id (resolved to a
+// real id on the next sync via the temp-id mapping).
+func (m *model) addTask(text string, proj Project) string {
 	q := parseQuickAdd(text)
 	temp := "tmp-" + genID()
 	it := apiItem{
@@ -578,6 +707,7 @@ func (m *model) addTask(text string, proj Project) {
 	m.enqueue(Command{Type: "item_add", UUID: genID(), TempID: temp, Args: args})
 	m.deriveAll()
 	m.status = "added: " + q.Content
+	return temp
 }
 
 func (m *model) completeTask(id, content string) {
@@ -589,6 +719,19 @@ func (m *model) completeTask(id, content string) {
 	m.unpinIfMatches(id)
 	m.deriveAll()
 	m.status = "completed: " + content
+}
+
+// uncompleteTask reopens a completed task (queued for sync) and re-links any
+// mind-map node pointing at it.
+func (m *model) uncompleteTask(id, content string) {
+	if it, ok := m.cache.Items[id]; ok {
+		it.Checked = false
+		m.cache.Items[id] = it
+	}
+	m.enqueue(Command{Type: "item_uncomplete", UUID: genID(), Args: map[string]any{"id": id}})
+	m.syncMindLinks(nil) // clear the Done flag on any linked node
+	m.deriveAll()
+	m.status = "reopened: " + content
 }
 
 func (m *model) deleteTask(id, content string) {
@@ -729,10 +872,20 @@ func splitLabels(s string) []string {
 
 func (m *model) selectedTask() (Task, bool) {
 	it, ok := m.list.SelectedItem().(taskItem)
-	if !ok {
+	if !ok || it.sep {
 		return Task{}, false
 	}
 	return it.t, true
+}
+
+// readonlyGuard blocks mutating actions on completed tasks (shown read-only in
+// the completed view). It returns true and sets a status when t is completed.
+func (m *model) readonlyGuard(t Task) bool {
+	if t.Done {
+		m.status = "✓ completed — read-only"
+		return true
+	}
+	return false
 }
 
 // applyView rebuilds the visible list from allTasks, narrowed by the local
@@ -743,7 +896,7 @@ func (m *model) applyView() {
 		var items []list.Item
 		for _, t := range m.allTasks {
 			if t.ID == m.pinnedID {
-				items = append(items, taskItem{t})
+				items = append(items, taskItem{t: t})
 				break
 			}
 		}
@@ -753,7 +906,7 @@ func (m *model) applyView() {
 	if m.onlineView {
 		items := make([]list.Item, len(m.onlineResults))
 		for i, t := range m.onlineResults {
-			items[i] = taskItem{t}
+			items[i] = taskItem{t: t}
 		}
 		m.list.SetItems(items)
 		return
@@ -766,7 +919,7 @@ func (m *model) applyView() {
 		var items []list.Item
 		for _, id := range m.recentIDs {
 			if t, ok := byID[id]; ok {
-				items = append(items, taskItem{t})
+				items = append(items, taskItem{t: t})
 			}
 		}
 		m.list.SetItems(items)
@@ -794,11 +947,57 @@ func (m *model) applyView() {
 		matched = append(matched, t)
 	}
 	m.sortTasks(matched)
-	items := make([]list.Item, len(matched))
-	for i, t := range matched {
-		items[i] = taskItem{t}
+
+	// The completed view is only available inside a single project; elsewhere it
+	// always falls back to active-only.
+	cv := m.completedView
+	if m.projectView == "" {
+		cv = 0
+	}
+
+	var items []list.Item
+	if cv != 2 { // 0 or 1: include active tasks
+		for _, t := range matched {
+			items = append(items, taskItem{t: t})
+		}
+	}
+	if cv != 0 { // 1 or 2: include completed tasks (read-only)
+		completed := m.filteredCompleted(q)
+		if cv == 1 && len(items) > 0 && len(completed) > 0 {
+			items = append(items, taskItem{sep: true, label: "completed"})
+		}
+		for _, t := range completed {
+			items = append(items, taskItem{t: t})
+		}
 	}
 	m.list.SetItems(items)
+}
+
+// filteredCompleted returns completed tasks narrowed by the active project,
+// priority and text filters (date filters are skipped — completed tasks rarely
+// match "today"-style queries).
+func (m *model) filteredCompleted(q string) []Task {
+	if m.cache == nil {
+		return nil
+	}
+	var out []Task
+	for _, t := range m.cache.CompletedTasks() {
+		if m.projectView != "" && t.Project != m.projectView {
+			continue
+		}
+		if m.priorityView != "" && t.Priority != m.priorityView {
+			continue
+		}
+		if q != "" {
+			hay := strings.ToLower(t.Content + " " + t.Project + " " + t.Labels)
+			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	m.sortTasks(out)
+	return out
 }
 
 // dateSortKey makes an ISO-ish date string sortable; empty sorts last.
@@ -888,7 +1087,8 @@ func (m *model) applyState(s viewState) tea.Cmd {
 	m.recentView = false // any committed view leaves the recently-added view
 	m.onlineView = false // …and the online-search view
 	m.filter, m.textQuery, m.projectView, m.priorityView = s.filter, s.textQuery, s.projectView, s.priorityView
-	m.applyView() // everything is local now
+	m.completedView = 0 // start each view showing active tasks only
+	m.applyView()       // everything is local now
 	m.status = m.scopeStatus()
 	return nil
 }
@@ -968,7 +1168,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.online = true
 			m.status = "token OK — syncing…"
 			m.syncing = true
-			cmds := []tea.Cmd{syncNowCmd(m.cache.SyncToken, m.queue), m.restartAutoSync()}
+			m.syncBg = false
+			m.spinFrame = 0
+			cmds := []tea.Cmd{syncNowCmd(m.cache.SyncToken, m.queue), m.restartAutoSync(), spinnerTick()}
 			if m.mode == modeOnboard && !SettingsExist() {
 				// first run: ask which label means "ongoing"
 				m.beginLabelOnboard()
@@ -1019,9 +1221,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("online: %s — %d", msg.query, len(m.onlineResults))
 		return m, nil
 
+	case completedFetchedMsg:
+		if msg.err != nil {
+			m.status = "completed: showing local only (" + msg.err.Error() + ")"
+			return m, nil
+		}
+		for _, it := range msg.items {
+			if e, ok := m.cache.Items[it.ID]; ok {
+				e.Checked = true // keep richer local copy, just mark done
+				m.cache.Items[it.ID] = e
+			} else {
+				m.cache.Items[it.ID] = it
+			}
+		}
+		m.cache.Save()
+		m.deriveAll() // applyView re-renders the completed section
+		m.status = fmt.Sprintf("completed loaded from Todoist (%d)", len(msg.items))
+		return m, nil
+
 	case homeFlashOffMsg:
 		m.homeFlash = false
 		return m, nil
+
+	case spinnerTickMsg:
+		if !m.syncing {
+			m.spinFrame = 0
+			return m, nil // sync finished — stop animating
+		}
+		m.spinFrame++
+		return m, spinnerTick()
 
 	case autoSyncTickMsg:
 		if msg.gen != m.tickGen || m.settings.SyncSeconds <= 0 {
@@ -1030,8 +1258,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{autoSyncCmd(m.tickGen, m.settings.SyncSeconds)} // reschedule
 		if !m.syncing && HasToken() {
 			m.syncing = true
+			m.syncBg = true
+			m.spinFrame = 0
 			m.status = "auto-syncing…"
-			cmds = append(cmds, syncNowCmd(m.cache.SyncToken, m.queue))
+			cmds = append(cmds, syncNowCmd(m.cache.SyncToken, m.queue), spinnerTick())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1044,7 +1274,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.online = true
 		m.err = ""
+		mapping := map[string]string{}
+		if msg.resp != nil {
+			mapping = msg.resp.TempIDMapping
+		}
 		m.cache.Merge(msg.resp)
+		m.syncMindLinks(mapping)
 		if msg.sent <= len(m.queue) { // drop flushed commands, keep any added during sync
 			m.queue = m.queue[msg.sent:]
 		} else {
@@ -1110,6 +1345,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateIdeaAdd(msg)
 		case modeIdeaList:
 			return m.updateIdeaList(msg)
+		case modeIdeaRename:
+			return m.updateIdeaRename(msg)
+		case modeMindMap:
+			return m.updateMindMap(msg)
+		case modeMindEdit:
+			return m.updateMindEdit(msg)
+		case modeMindHelp:
+			// Any key closes the mind-map help and returns to the map.
+			m.mode = modeMindMap
+			return m, nil
+		case modeMindPalette:
+			return m.updateMindPalette(msg)
+		case modeMindConfirmDelete:
+			return m.updateMindConfirmDelete(msg)
+		case modeMindConfirmUnbind:
+			return m.updateMindConfirmUnbind(msg)
 		case modeDeadlinePick:
 			return m.updateDeadlinePick(msg)
 		case modeTimezone:
@@ -1150,7 +1401,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.comments = m.cache.CommentsFor(m.pinnedID)
 			}
 			return m, nil
-		case "a", "A", "p", "P", "o", "f", "t", "T", "W", "m", "M", "d", "D", "R",
+		case "a", "A", "p", "P", "o", "f", "t", "T", "W", "m", "M", "d", "D", "R", "Y",
 			"/", "?", ",", "b", "h", "1", "2", "3", "4", "5", "6", "7", "0":
 			m.status = "📌 pinned — type :unpin (then Enter) to switch tasks"
 			return m, nil
@@ -1183,7 +1434,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeCommand
 		m.err = ""
 		m.input.EchoMode = textinput.EchoNormal
-		m.input.Placeholder = "unpin"
+		m.input.Placeholder = "unpin · q"
 		m.input.SetValue("")
 		m.input.CursorEnd()
 		m.input.Focus()
@@ -1272,7 +1523,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, textinput.Blink
 	case "enter":
-		if t, ok := m.selectedTask(); ok {
+		if t, ok := m.selectedTask(); ok && !m.readonlyGuard(t) {
 			m.detailTask = t
 			m.detailID = t.ID
 			m.mode = modeDetail
@@ -1284,8 +1535,18 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "c":
-		if t, ok := m.selectedTask(); ok {
+		if t, ok := m.selectedTask(); ok && !m.readonlyGuard(t) {
 			m.completeTask(t.ID, t.Content)
+		}
+		return m, nil
+	case "C":
+		// Reopen (un-complete) a highlighted completed task.
+		if t, ok := m.selectedTask(); ok {
+			if !t.Done {
+				m.status = "C reopens a completed task — this one is already active"
+				return m, nil
+			}
+			m.uncompleteTask(t.ID, t.Content)
 		}
 		return m, nil
 	case "o":
@@ -1330,19 +1591,19 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "O":
 		// Tag/untag the selected task with the ongoing label.
-		if t, ok := m.selectedTask(); ok {
+		if t, ok := m.selectedTask(); ok && !m.readonlyGuard(t) {
 			m.toggleLabel(t.ID, m.settings.OngoingLabel)
 		}
 		return m, nil
 	case "F":
 		// Tag/untag the selected task with the follow-up label.
-		if t, ok := m.selectedTask(); ok {
+		if t, ok := m.selectedTask(); ok && !m.readonlyGuard(t) {
 			m.toggleLabel(t.ID, m.settings.FollowupLabel)
 		}
 		return m, nil
 	case "U":
 		// Tag/untag the selected task with the up-next label.
-		if t, ok := m.selectedTask(); ok {
+		if t, ok := m.selectedTask(); ok && !m.readonlyGuard(t) {
 			m.toggleLabel(t.ID, m.settings.UpNextLabel)
 		}
 		return m, nil
@@ -1353,6 +1614,15 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+		return m, cmd
+	case "up", "down", "k", "j":
+		// Move, then hop over the non-selectable "completed" separator so up/down
+		// jumps straight between tasks.
+		var cmd tea.Cmd
+		m.list, cmd = m.list.Update(msg)
+		if it, ok := m.list.SelectedItem().(taskItem); ok && it.sep {
+			m.list, cmd = m.list.Update(msg)
+		}
 		return m, cmd
 	case "R":
 		// Recently added — last 10 tasks by added date (from cache).
@@ -1374,8 +1644,33 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case "Y":
+		// Completed view only makes sense inside a single project.
+		if m.projectView == "" {
+			m.status = "open a project first (p) — completed view is per-project"
+			return m, nil
+		}
+		m.completedView = (m.completedView + 1) % 3
+		m.applyView()
+		switch m.completedView {
+		case 1:
+			m.status = "showing active + completed (loading from Todoist…)"
+		case 2:
+			m.status = "showing completed only (loading from Todoist…)"
+		default:
+			m.status = "showing active tasks"
+			return m, nil
+		}
+		// Pull completed tasks for this project from the server (local cache shows
+		// immediately; the server results merge in when they arrive).
+		if HasToken() {
+			if p, ok := m.projectByName(m.projectView); ok {
+				return m, fetchCompletedCmd(p.ID)
+			}
+		}
+		return m, nil
 	case "x":
-		if _, ok := m.selectedTask(); ok {
+		if t, ok := m.selectedTask(); ok && !m.readonlyGuard(t) {
 			m.mode = modeConfirm
 			return m, nil
 		}
@@ -1396,8 +1691,10 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.syncing = true
+		m.syncBg = false
+		m.spinFrame = 0
 		m.status = "syncing…"
-		return m, syncNowCmd(m.cache.SyncToken, m.queue)
+		return m, tea.Batch(syncNowCmd(m.cache.SyncToken, m.queue), spinnerTick())
 	case "b":
 		return m, m.goBack()
 	case "h", "esc":
@@ -1569,6 +1866,10 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setPickerItems()
 			return m, nil
 		}
+		if m.pickIntent == pickMindTasks {
+			m.mode = modeMindMap // back to the map we came from
+			return m, nil
+		}
 		m.mode = modeList
 		return m, nil
 	case "up", "down", "ctrl+p", "pgup", "pgdown":
@@ -1593,10 +1894,11 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "ctrl+e":
-		// Archive the selected project.
+		// Archive the selected project, then sync right away.
 		if it, ok := m.projList.SelectedItem().(projItem); ok &&
 			it.kind != kindSep && it.p.ID != allProjectsID && it.p.ID != "" {
 			m.archiveProjectLocal(it.p)
+			return m, m.startSync()
 		}
 		return m, nil
 	case "backspace":
@@ -1608,6 +1910,9 @@ func (m model) updateProjectPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
+		if m.pickIntent == pickMindTasks {
+			return m.commitMindTasks()
+		}
 		it, ok := m.projList.SelectedItem().(projItem)
 		if !ok || it.kind == kindSep {
 			return m, nil // nothing selectable
@@ -1654,6 +1959,110 @@ func (m *model) addProjectLocal(name string) {
 	m.status = "added project: #" + name
 }
 
+// commitMindTasks adds every task-flagged mind-map node as a Todoist task under
+// the chosen project. If the typed name matches no existing project, it is
+// auto-created first. Each node is linked to its new task id.
+func (m model) commitMindTasks() (tea.Model, tea.Cmd) {
+	q := strings.TrimPrefix(strings.TrimSpace(m.projQuery), "#")
+	var target Project
+	switch {
+	case q != "" && !m.projectExists(q):
+		// Typed a name that doesn't exist yet — create it.
+		m.addProjectLocal(q)
+		if p, ok := m.projectByName("#" + q); ok {
+			target = p
+		}
+	default:
+		it, ok := m.projList.SelectedItem().(projItem)
+		if ok && it.kind != kindSep && it.p.ID != "" && it.p.ID != allProjectsID {
+			target = it.p
+		} else if q != "" {
+			if p, ok := m.projectByName("#" + q); ok {
+				target = p
+			}
+		}
+	}
+	if target.ID == "" {
+		m.status = "pick or type a project name"
+		return m, nil
+	}
+	m = m.convertMindTasksTo(target)
+	m.mode = modeMindMap
+	return m, nil
+}
+
+// convertMindTasksTo adds the idea's unlinked task nodes to target, links each to
+// its new task id, and binds the idea to that one project.
+func (m model) convertMindTasksTo(target Project) model {
+	tasks := m.ideas[m.mindIdea].collectMindTasks()
+	for _, n := range tasks {
+		n.TaskID = m.addTask(n.Text, target)
+	}
+	m.ideas[m.mindIdea].ProjectID = target.ID
+	m.ideas[m.mindIdea].ProjectName = target.Name
+	m.recents = pushRecentProject(m.recents, target)
+	SaveRecentProjects(m.recents)
+	SaveIdeas(m.ideas)
+	m.status = fmt.Sprintf("✅ added %d task(s) to %s — press s to sync", len(tasks), target.Name)
+	return m
+}
+
+// projectByID finds a project by its Todoist id.
+func (m *model) projectByID(id string) (Project, bool) {
+	for _, p := range m.projects {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Project{}, false
+}
+
+// syncMindLinks reconciles linked mind-map nodes after a sync: it remaps any
+// temporary task ids to their real ids, and marks a node done when its linked
+// task has been completed in Todoist.
+func (m *model) syncMindLinks(mapping map[string]string) {
+	changed := false
+	var walk func(ns []*MindNode)
+	walk = func(ns []*MindNode) {
+		for _, n := range ns {
+			if n.TaskID != "" {
+				if real, ok := mapping[n.TaskID]; ok && real != "" {
+					n.TaskID = real
+					changed = true
+				}
+				if it, ok := m.cache.Items[n.TaskID]; ok && it.Checked != n.Done {
+					n.Done = it.Checked
+					changed = true
+				}
+			}
+			walk(n.Children)
+		}
+	}
+	for i := range m.ideas {
+		// Remap an auto-created project's temp id to its real id once it syncs.
+		if real, ok := mapping[m.ideas[i].ProjectID]; ok && real != "" {
+			m.ideas[i].ProjectID = real
+			changed = true
+		}
+		walk(m.ideas[i].Children)
+	}
+	if changed {
+		SaveIdeas(m.ideas)
+	}
+}
+
+// projectExists reports whether a project's name (without the leading #) matches
+// the given text case-insensitively.
+func (m *model) projectExists(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, p := range m.projects {
+		if strings.ToLower(strings.TrimPrefix(p.Name, "#")) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // archiveProjectLocal archives a project (kept on the server, hidden here).
 func (m *model) archiveProjectLocal(p Project) {
 	if it, ok := m.cache.Projects[p.ID]; ok {
@@ -1661,6 +2070,11 @@ func (m *model) archiveProjectLocal(p Project) {
 		m.cache.Projects[p.ID] = it
 	}
 	m.enqueue(Command{Type: "project_archive", UUID: genID(), Args: map[string]any{"id": p.ID}})
+	m.recents = removeRecentProject(m.recents, p.ID)
+	SaveRecentProjects(m.recents)
+	if m.projectView == p.Name { // leave a view filtered to the archived project
+		m.projectView = ""
+	}
 	m.deriveAll()
 	m.setPickerItems()
 	m.status = "archived project: " + p.Name
@@ -1675,6 +2089,11 @@ func (m *model) deleteProjectLocal(p Project) {
 		}
 	}
 	m.enqueue(Command{Type: "project_delete", UUID: genID(), Args: map[string]any{"id": p.ID}})
+	m.recents = removeRecentProject(m.recents, p.ID)
+	SaveRecentProjects(m.recents)
+	if m.projectView == p.Name {
+		m.projectView = ""
+	}
 	m.deriveAll()
 	m.setPickerItems()
 	m.status = "deleted project: " + p.Name
@@ -1745,8 +2164,28 @@ func (m model) updateIdeaAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) updateIdeaList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q", "I", "enter":
+	case "esc", "q", "I", "b":
 		m.mode = modeList
+		return m, nil
+	case "enter", "right", "l":
+		// Open the selected idea as a mind map (the idea is the root node).
+		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
+			m.mindIdea = m.ideaCursor
+			m.mindCursor = 0
+			m.mode = modeMindMap
+		}
+		return m, nil
+	case "R", "e":
+		// Rename the selected idea.
+		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
+			m.mode = modeIdeaRename
+			m.input.EchoMode = textinput.EchoNormal
+			m.input.Placeholder = "rename idea…"
+			m.input.SetValue(m.ideas[m.ideaCursor].Text)
+			m.input.CursorEnd()
+			m.input.Focus()
+			return m, textinput.Blink
+		}
 		return m, nil
 	case "up", "k":
 		if m.ideaCursor > 0 {
@@ -1770,6 +2209,580 @@ func (m model) updateIdeaList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// updateIdeaRename commits a rename of the selected idea. Empty input keeps the
+// previous name (at least one character is required).
+func (m model) updateIdeaRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeIdeaList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		text := strings.TrimSpace(m.input.Value())
+		m.mode = modeIdeaList
+		m.input.Blur()
+		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
+			if text == "" {
+				m.status = "name can't be empty — kept the previous one"
+			} else {
+				m.ideas[m.ideaCursor].Text = text
+				SaveIdeas(m.ideas)
+				m.status = "idea renamed"
+			}
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// mindRow is one visible line of the flattened mind-map tree. node is nil for
+// the root (which is the idea itself). parent points to the slice that contains
+// node, so siblings can be inserted/removed; prefix is the box-drawing gutter.
+type mindRow struct {
+	node   *MindNode
+	parent *[]*MindNode
+	index  int // node's position within *parent (-1 for root)
+	depth  int
+	prefix string
+	last   bool // node is the last among its siblings
+	isRoot bool
+}
+
+// label returns the text shown for a row.
+func (r mindRow) label(idea Idea) string {
+	if r.isRoot {
+		return idea.Text
+	}
+	return r.node.Text
+}
+
+// mindRows flattens the current idea's mind map into the visible rows, skipping
+// the children of collapsed nodes and precomputing each row's connector prefix.
+func (m model) mindRows() []mindRow {
+	if m.mindIdea < 0 || m.mindIdea >= len(m.ideas) {
+		return nil
+	}
+	idea := &m.ideas[m.mindIdea]
+	rows := []mindRow{{isRoot: true, index: -1}}
+	var walk func(children *[]*MindNode, depth int, ancestorsLast []bool)
+	walk = func(children *[]*MindNode, depth int, ancestorsLast []bool) {
+		for i := range *children {
+			n := (*children)[i]
+			last := i == len(*children)-1
+			var b strings.Builder
+			for _, al := range ancestorsLast {
+				if al {
+					b.WriteString("   ")
+				} else {
+					b.WriteString("│  ")
+				}
+			}
+			if last {
+				b.WriteString("└─ ")
+			} else {
+				b.WriteString("├─ ")
+			}
+			rows = append(rows, mindRow{
+				node: n, parent: children, index: i, depth: depth,
+				prefix: b.String(), last: last,
+			})
+			if !n.Collapsed && len(n.Children) > 0 {
+				walk(&n.Children, depth+1, append(append([]bool{}, ancestorsLast...), last))
+			}
+		}
+	}
+	walk(&idea.Children, 1, nil)
+	return rows
+}
+
+// mindIndexOf returns the visible row index of target (0 if not found/visible).
+func (m model) mindIndexOf(target *MindNode) int {
+	for i, r := range m.mindRows() {
+		if r.node == target {
+			return i
+		}
+	}
+	return 0
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// moveMindVertical moves the cursor to the nearest node above (down=false) or
+// below (down=true) the current one by vertical position. Used when up/down has
+// no sibling to move to, so the cursor jumps to the node visually adjacent.
+func (m *model) moveMindVertical(cur mindRow, down bool) {
+	_, boxes, _, _ := m.buildMindBoxes()
+	var curBox *mindBox
+	for _, b := range boxes {
+		if (cur.isRoot && b.isRoot) || (!cur.isRoot && b.node == cur.node) {
+			curBox = b
+			break
+		}
+	}
+	if curBox == nil {
+		return
+	}
+	// Candidate picker: nearest by row, ties broken by horizontal closeness.
+	pick := func(sameColOnly bool) *mindBox {
+		var best *mindBox
+		for _, b := range boxes {
+			if b == curBox {
+				continue
+			}
+			if down && b.cy <= curBox.cy {
+				continue
+			}
+			if !down && b.cy >= curBox.cy {
+				continue
+			}
+			if sameColOnly && b.x != curBox.x {
+				continue // restrict to the same column (same depth)
+			}
+			if best == nil {
+				best = b
+				continue
+			}
+			bd, cd := absInt(b.cy-curBox.cy), absInt(best.cy-curBox.cy)
+			if bd < cd || (bd == cd && absInt(b.x-curBox.x) < absInt(best.x-curBox.x)) {
+				best = b
+			}
+		}
+		return best
+	}
+	// Prefer a node in the same column (same depth); fall back to any node so the
+	// last node in a column can still step down/up into a neighbouring branch.
+	best := pick(true)
+	if best == nil {
+		best = pick(false)
+	}
+	if best == nil {
+		return
+	}
+	if best.isRoot {
+		m.mindCursor = 0
+	} else {
+		m.mindCursor = m.mindIndexOf(best.node)
+	}
+}
+
+func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	rows := m.mindRows()
+	if len(rows) == 0 {
+		m.mode = modeIdeaList
+		return m, nil
+	}
+	if m.mindCursor < 0 {
+		m.mindCursor = 0
+	}
+	if m.mindCursor >= len(rows) {
+		m.mindCursor = len(rows) - 1
+	}
+	cur := rows[m.mindCursor]
+
+	switch msg.String() {
+	case "esc", "q", "b":
+		// Back to the idea list (b is "back" everywhere).
+		SaveIdeas(m.ideas)
+		m.mode = modeIdeaList
+		return m, nil
+	case "H", "?":
+		// Dedicated mind-map keyboard help.
+		m.mode = modeMindHelp
+		return m, nil
+	case "r":
+		// Jump back to the root node (left-most / first node).
+		m.mindCursor = 0
+		return m, nil
+	case "R":
+		// Rename the root node — i.e. the idea itself (label + stored idea text).
+		m.mindCursor = 0
+		return m.beginMindEdit(nil, m.ideas[m.mindIdea].Text)
+	case "`":
+		// Quick-action palette (mirrors the task list's ` palette).
+		m.mode = modeMindPalette
+		m.palQuery = ""
+		m.palCursor = 0
+		return m, nil
+	case "up", "k":
+		// Previous sibling; if there isn't one, the nearest node above.
+		if !cur.isRoot && cur.parent != nil && cur.index > 0 {
+			m.mindCursor = m.mindIndexOf((*cur.parent)[cur.index-1])
+			return m, nil
+		}
+		m.moveMindVertical(cur, false)
+		return m, nil
+	case "down", "j":
+		// Next sibling; if there isn't one, the nearest node below.
+		if !cur.isRoot && cur.parent != nil && cur.index+1 < len(*cur.parent) {
+			m.mindCursor = m.mindIndexOf((*cur.parent)[cur.index+1])
+			return m, nil
+		}
+		m.moveMindVertical(cur, true)
+		return m, nil
+	case "left", "h":
+		// Go back to the parent — the node one column to the left. (Folding is
+		// on space only.)
+		if cur.isRoot {
+			return m, nil
+		}
+		for i := m.mindCursor - 1; i >= 0; i-- {
+			if rows[i].depth < cur.depth {
+				m.mindCursor = i
+				break
+			}
+		}
+		return m, nil
+	case "right", "l":
+		// Descend to the first child of an expanded branch.
+		if cur.isRoot {
+			if m.mindCursor < len(rows)-1 {
+				m.mindCursor++
+			}
+			return m, nil
+		}
+		if len(cur.node.Children) > 0 && !cur.node.Collapsed && m.mindCursor < len(rows)-1 {
+			m.mindCursor++
+		}
+		return m, nil
+	case "c", "C", "v", "V":
+		// Colour cycling: c/C = outline, v/V = background; uppercase also paints
+		// every descendant. The root's colour lives on the idea itself.
+		key := msg.String()
+		subtree := key == "C" || key == "V"
+		outline := key == "c" || key == "C"
+		if cur.isRoot {
+			idea := &m.ideas[m.mindIdea]
+			if outline {
+				idea.Color = nextMindColor(idea.Color)
+				if subtree {
+					setSubtreeOutline(idea.Children, idea.Color)
+				}
+			} else {
+				idea.BG = nextMindColor(idea.BG)
+				if subtree {
+					setSubtreeBG(idea.Children, idea.BG)
+				}
+			}
+		} else {
+			if outline {
+				cur.node.Color = nextMindColor(cur.node.Color)
+				if subtree {
+					setSubtreeOutline(cur.node.Children, cur.node.Color)
+				}
+			} else {
+				cur.node.BG = nextMindColor(cur.node.BG)
+				if subtree {
+					setSubtreeBG(cur.node.Children, cur.node.BG)
+				}
+			}
+		}
+		SaveIdeas(m.ideas)
+		return m, nil
+	case "tab", "o":
+		// Tab adds a child to the selected node.
+		n := &MindNode{}
+		if cur.isRoot {
+			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
+		} else {
+			cur.node.Collapsed = false
+			cur.node.Children = append(cur.node.Children, n)
+		}
+		m.mindCursor = m.mindIndexOf(n)
+		return m.beginMindEdit(n, "")
+	case "enter":
+		// Enter adds a sibling after the selected node (a child of the root,
+		// which has no siblings).
+		n := &MindNode{}
+		if cur.isRoot {
+			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
+		} else {
+			*cur.parent = insertMindNode(*cur.parent, cur.index+1, n)
+		}
+		m.mindCursor = m.mindIndexOf(n)
+		return m.beginMindEdit(n, "")
+	case "e", "i", "f2":
+		// Edit the selected node's text (i / e / F2).
+		if cur.isRoot {
+			return m.beginMindEdit(nil, m.ideas[m.mindIdea].Text)
+		}
+		return m.beginMindEdit(cur.node, cur.node.Text)
+	case " ":
+		// Toggle collapse on a branch.
+		if !cur.isRoot && len(cur.node.Children) > 0 {
+			cur.node.Collapsed = !cur.node.Collapsed
+			SaveIdeas(m.ideas)
+		}
+		return m, nil
+	case "t":
+		// Mark / unmark the selected node as an actionable task.
+		if cur.isRoot {
+			m.status = "the root is the idea — mark a branch as a task instead"
+			return m, nil
+		}
+		cur.node.IsTask = !cur.node.IsTask
+		SaveIdeas(m.ideas)
+		if cur.node.IsTask {
+			m.status = "✅ marked as task"
+		} else {
+			m.status = "unmarked task"
+		}
+		return m, nil
+	case "T":
+		// Convert task-marked nodes into Todoist tasks. An idea binds to a single
+		// project: once bound, T just tops up any new tasks and reminds you to sync.
+		idea := &m.ideas[m.mindIdea]
+		pending := idea.collectMindTasks() // task nodes not yet linked
+		if idea.ProjectID != "" {
+			if p, ok := m.projectByID(idea.ProjectID); ok {
+				if len(pending) == 0 {
+					m.status = "already bound to " + idea.ProjectName + " — press s to sync"
+					return m, nil
+				}
+				m = m.convertMindTasksTo(p)
+				m.status = fmt.Sprintf("added %d new task(s) to %s — press s to sync", len(pending), p.Name)
+				return m, nil
+			}
+		}
+		if len(pending) == 0 {
+			m.status = "no nodes marked as task — press t on nodes first"
+			return m, nil
+		}
+		m.mode = modeProjectPick
+		m.pickIntent = pickMindTasks
+		m.err = ""
+		m.projQuery = ""
+		m.setPickerItems()
+		m.selectLastProject()
+		return m, nil
+	case "U":
+		// Unbind the idea from its project — ask first.
+		if m.ideas[m.mindIdea].ProjectID == "" {
+			m.status = "this idea isn't bound to a project"
+			return m, nil
+		}
+		m.mode = modeMindConfirmUnbind
+		return m, nil
+	case "s":
+		// Sync. First top up the bound project with any new task nodes, then flush
+		// and pull. Tasks already linked (or deleted in Todoist) are left alone.
+		if m.syncing {
+			return m, nil
+		}
+		added := m.topUpBoundIdeas()
+		m.syncing = true
+		m.syncBg = false
+		m.spinFrame = 0
+		if added > 0 {
+			m.status = fmt.Sprintf("syncing… (+%d new task(s))", added)
+		} else {
+			m.status = "syncing…"
+		}
+		return m, tea.Batch(syncNowCmd(m.cache.SyncToken, m.queue), spinnerTick())
+	case "x":
+		// x only completes/reopens task nodes. On a non-task node it does
+		// nothing — use d to delete.
+		if cur.isRoot || !cur.node.IsTask {
+			m.status = "not a task — press t to mark, or d to delete"
+			return m, nil
+		}
+		return m.toggleMindDone(cur.node), nil
+	case "d", "delete":
+		// Delete the node and its whole subtree — ask first. The root can't be
+		// deleted (it's the idea — rename it with R, or remove it from the list).
+		if cur.isRoot {
+			m.status = "the root can't be deleted — it's the idea (press R to rename)"
+			return m, nil
+		}
+		m.mindDelTarget = cur.node
+		m.mode = modeMindConfirmDelete
+		return m, nil
+	}
+	return m, nil
+}
+
+// topUpBoundIdeas creates Todoist tasks for any task-flagged nodes that aren't
+// linked yet, in every idea already bound to a project. Nodes already linked
+// (including ones whose task was deleted in Todoist) are left untouched, so a
+// manually-deleted task is never recreated. Returns the number added.
+func (m *model) topUpBoundIdeas() int {
+	total := 0
+	for i := range m.ideas {
+		idea := &m.ideas[i]
+		if idea.ProjectID == "" {
+			continue
+		}
+		// Resolve the bound project. The stored id can go stale (e.g. an
+		// auto-created project's temp id changes once it syncs), so fall back to
+		// matching by name and self-heal the stored id.
+		p, ok := m.projectByID(idea.ProjectID)
+		if !ok && idea.ProjectName != "" {
+			if p, ok = m.projectByName(idea.ProjectName); ok {
+				idea.ProjectID = p.ID
+			}
+		}
+		if !ok {
+			continue // bound project no longer exists — skip
+		}
+		for _, n := range idea.collectMindTasks() {
+			n.TaskID = m.addTask(n.Text, p)
+			total++
+		}
+	}
+	if total > 0 {
+		SaveIdeas(m.ideas)
+	}
+	return total
+}
+
+// updateMindConfirmDelete handles the y/n delete confirmation in the mind map.
+// Deleting only removes the node from the map — any linked Todoist task is left
+// in place.
+func (m model) updateMindConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		if m.mindDelTarget != nil {
+			removeMindNode(&m.ideas[m.mindIdea].Children, m.mindDelTarget)
+			SaveIdeas(m.ideas)
+			if n := len(m.mindRows()); m.mindCursor >= n {
+				m.mindCursor = n - 1
+			}
+			if m.mindCursor < 0 {
+				m.mindCursor = 0
+			}
+			m.status = "node deleted"
+		}
+		m.mindDelTarget = nil
+		m.mode = modeMindMap
+		return m, nil
+	case "n", "esc":
+		m.mindDelTarget = nil
+		m.mode = modeMindMap
+		m.status = "delete cancelled"
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateMindConfirmUnbind handles the y/n confirmation for unbinding the idea's
+// project (which also unlinks the generated task ids).
+func (m model) updateMindConfirmUnbind(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		idea := &m.ideas[m.mindIdea]
+		was := idea.ProjectName
+		idea.ProjectID = ""
+		idea.ProjectName = ""
+		unlinkMindTasks(idea.Children)
+		SaveIdeas(m.ideas)
+		m.mode = modeMindMap
+		m.status = "unbound from " + was + " — tasks unlinked"
+		return m, nil
+	case "n", "esc":
+		m.mode = modeMindMap
+		m.status = "unbind cancelled"
+		return m, nil
+	}
+	return m, nil
+}
+
+// toggleMindDone flips a task node's done state, completing or un-completing its
+// linked Todoist task (queued for sync) when one exists.
+func (m model) toggleMindDone(n *MindNode) model {
+	n.Done = !n.Done
+	if n.TaskID != "" {
+		if it, ok := m.cache.Items[n.TaskID]; ok {
+			it.Checked = n.Done
+			m.cache.Items[n.TaskID] = it
+		}
+		if n.Done {
+			m.enqueue(Command{Type: "item_complete", UUID: genID(), Args: map[string]any{"id": n.TaskID}})
+		} else {
+			m.enqueue(Command{Type: "item_uncomplete", UUID: genID(), Args: map[string]any{"id": n.TaskID}})
+		}
+		m.deriveAll()
+	}
+	SaveIdeas(m.ideas)
+	if n.Done {
+		m.status = "✅ task completed"
+	} else {
+		m.status = "task reopened"
+	}
+	return m
+}
+
+// beginMindEdit opens the node text editor. node == nil edits the root idea.
+func (m model) beginMindEdit(node *MindNode, text string) (tea.Model, tea.Cmd) {
+	m.mindEditNode = node
+	m.mindEditNew = node != nil && node.Text == "" && len(node.Children) == 0
+	m.mode = modeMindEdit
+	m.input.EchoMode = textinput.EchoNormal
+	m.input.Placeholder = "node text…"
+	m.input.SetValue(text)
+	m.input.CursorEnd()
+	m.input.Focus()
+	return m, textinput.Blink
+}
+
+func (m model) updateMindEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.commitMindEdit(true)
+		m.mode = modeMindMap
+		return m, nil
+	case "enter":
+		m.commitMindEdit(false)
+		m.mode = modeMindMap
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// commitMindEdit writes (or discards) the node text being edited. A canceled or
+// empty brand-new node is removed so the tree never keeps blank placeholders.
+func (m *model) commitMindEdit(cancel bool) {
+	text := strings.TrimSpace(m.input.Value())
+	node := m.mindEditNode
+	m.input.Blur()
+	switch {
+	case node == nil: // editing the root idea
+		if !cancel && text != "" {
+			m.ideas[m.mindIdea].Text = text
+		} else if !cancel {
+			m.status = "name can't be empty — kept the previous one"
+		}
+	case cancel:
+		if m.mindEditNew {
+			removeMindNode(&m.ideas[m.mindIdea].Children, node)
+		}
+	case text == "":
+		if m.mindEditNew {
+			removeMindNode(&m.ideas[m.mindIdea].Children, node)
+		} else {
+			m.status = "name can't be empty — kept the previous one"
+		}
+	default:
+		node.Text = text
+	}
+	m.mindEditNode = nil
+	m.mindEditNew = false
+	if rows := m.mindRows(); m.mindCursor >= len(rows) {
+		m.mindCursor = len(rows) - 1
+	}
+	if m.mindCursor < 0 {
+		m.mindCursor = 0
+	}
+	SaveIdeas(m.ideas)
 }
 
 func (m model) updateProjectAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1797,7 +2810,7 @@ func (m model) updateProjectDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		m.deleteProjectLocal(m.projDelTarget)
 		m.mode = modeProjectPick
-		return m, nil
+		return m, m.startSync()
 	default:
 		m.mode = modeProjectPick
 		return m, nil
@@ -1894,7 +2907,7 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ":":
 		m.mode = modeCommand
 		m.input.EchoMode = textinput.EchoNormal
-		m.input.Placeholder = "unpin"
+		m.input.Placeholder = "unpin · q"
 		m.input.SetValue("")
 		m.input.Focus()
 		return m, textinput.Blink
@@ -2025,6 +3038,9 @@ func (m model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.input.Blur()
 		switch cmd {
+		case "q", "quit", "wq", "q!", "x":
+			// vim-style quit: `:q` then Enter.
+			return m, tea.Quit
 		case "unpin", "unpin task", "u":
 			if m.pinnedID != "" {
 				m.pinnedID = ""
@@ -2301,12 +3317,22 @@ func (m model) View() string {
 		}
 		scope += lipgloss.NewStyle().Foreground(dimColor).Render(fmt.Sprintf("   ⇅ %s %s", m.sortMode.label(), dir))
 	}
+	if m.projectView != "" && m.completedView == 1 {
+		scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ +completed")
+	} else if m.projectView != "" && m.completedView == 2 {
+		scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ completed only")
+	}
 	left := lipgloss.JoinHorizontal(lipgloss.Center, title, statusStyle.Render(scope))
 	ver := lipgloss.NewStyle().Foreground(dimColor).Render("todo-ui " + version + " ")
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(ver)
 	header := left
 	if gap > 1 {
 		header = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), ver)
+	}
+	// While a sync runs, show a cyan indeterminate progress bar under the title
+	// bar — visible in every view (task list, mind map, detail, …).
+	if m.syncing {
+		header = lipgloss.JoinVertical(lipgloss.Left, header, m.syncBar())
 	}
 
 	if m.mode == modeOnboard {
@@ -2417,8 +3443,25 @@ func (m model) View() string {
 	}
 
 	// Idea catcher overlays everything (even a pinned task).
-	if m.mode == modeIdeaAdd || m.mode == modeIdeaList {
+	if m.mode == modeIdeaAdd || m.mode == modeIdeaList || m.mode == modeIdeaRename {
 		return m.ideaView(header)
+	}
+
+	// Mind-map editor takes over the whole body.
+	if m.mode == modeMindMap || m.mode == modeMindEdit {
+		return m.mindMapView(header)
+	}
+	if m.mode == modeMindHelp {
+		return m.mindHelpView(header)
+	}
+	if m.mode == modeMindPalette {
+		return m.mindPaletteView(header)
+	}
+	if m.mode == modeMindConfirmDelete {
+		return m.mindConfirmDeleteView(header)
+	}
+	if m.mode == modeMindConfirmUnbind {
+		return m.mindConfirmUnbindView(header)
 	}
 
 	// Pinned focus mode: a centered card instead of the list.
@@ -2431,8 +3474,12 @@ func (m model) View() string {
 	case modeProjectPick, modeProjectAdd, modeProjectDelete:
 		accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
 		prompt := "Add to which project?"
-		if m.pickIntent == pickView {
+		switch m.pickIntent {
+		case pickView:
 			prompt = "View which project?"
+		case pickMindTasks:
+			n := len(m.ideas[m.mindIdea].collectMindTasks())
+			prompt = fmt.Sprintf("Add %d marked task(s) to which project? (type a new name to create)", n)
 		}
 		line := accent.Render(prompt)
 		if m.projQuery != "" {
@@ -2466,7 +3513,7 @@ func (m model) View() string {
 		body = promptBox.Render(label + m.input.View())
 	case modeCommand:
 		label := lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render(": ")
-		body = promptBox.Render(label + m.input.View() + lipgloss.NewStyle().Foreground(subColor).Render("   (try: unpin)"))
+		body = promptBox.Render(label + m.input.View() + lipgloss.NewStyle().Foreground(subColor).Render("   (try: unpin · q)"))
 	}
 
 	footer := m.footer()
@@ -2508,9 +3555,13 @@ func (m model) ideaView(header string) string {
 	innerW := cardW - 6
 
 	var rows []string
-	if m.mode == modeIdeaAdd {
+	if m.mode == modeIdeaAdd || m.mode == modeIdeaRename {
+		title := "💡  Catch an idea"
+		if m.mode == modeIdeaRename {
+			title = "💡  Rename idea"
+		}
 		rows = append(rows,
-			yellow.Render("💡  Catch an idea"),
+			yellow.Render(title),
 			"",
 			dim.Render("Saved locally — not sent to Todoist."),
 			"",
@@ -2531,10 +3582,13 @@ func (m model) ideaView(header string) string {
 					txtStyle = lipgloss.NewStyle().Foreground(brightColor).Bold(true)
 				}
 				when := dim.Render(shortTime(idea.At))
+				if n := idea.countNodes(); n > 0 {
+					when += "  " + dim.Render(fmt.Sprintf("🗺 %d", n))
+				}
 				text := txtStyle.Width(innerW).Render(strings.ReplaceAll(strings.TrimSpace(idea.Text), "\n", " "))
 				rows = append(rows, cur+when, "  "+text, "")
 			}
-			rows = append(rows, dim.Render("j/k move · x delete · esc close"))
+			rows = append(rows, dim.Render("j/k move · enter open map · R rename · x delete · b/esc back"))
 		}
 	}
 
@@ -2840,12 +3894,14 @@ var paletteActions = []paletteAction{
 	{"d", "Deadline today"},
 	{"D", "Deadline today or earlier"},
 	{"R", "Recently added"},
+	{"Y", "Show completed (cycle: active · both · completed only)"},
+	{"C", "Reopen the selected completed task"},
 	{"O", "Tag selected: ongoing"},
 	{"F", "Tag selected: follow-up"},
 	{"U", "Tag selected: up next"},
 	{"^", "Pin selected (focus mode)"},
 	{"i", "Catch an idea"},
-	{"I", "Browse captured ideas"},
+	{"I", "Browse captured ideas / open mind map"},
 	{"+", "Change theme (light / dark)"},
 	{",", "Menu / settings"},
 	{"s", "Sync now"},
@@ -3203,6 +4259,8 @@ func helpLines() []string {
 		head.Render("  Ideas & focus"),
 		row("i", "💡 Catch an idea (saved locally; works even while pinned)"),
 		row("I", "💡 Browse captured ideas (x delete · esc close)"),
+		row("", "   enter on an idea → 🗺 mind map (press H inside for its own help)"),
+		row("", "   map: tab child · enter sibling · ←→/hl move · t task · T→project · x done · c/C·b/B colour"),
 		row("^", "Pin — focus on one task; only it shows (this session)"),
 		row("", "   while pinned: > add comment · v show/hide comments"),
 		row(":unpin", "Release the pin (type : then unpin, Enter)"),
@@ -3222,6 +4280,8 @@ func helpLines() []string {
 		row("d", "Deadline is today"),
 		row("D", "Deadline is today or earlier"),
 		row("R", "Recently added — the last 10 tasks you created"),
+		row("Y", "Show completed — cycle active · active+completed · completed only (read-only)"),
+		row("C", "Reopen the highlighted completed task (un-complete)"),
 		row("/", "Search — plain words; or a local filter (today, #x & p1)"),
 		row("?", "Online search — full Todoist filter grammar (needs network)"),
 		"",
@@ -3371,7 +4431,7 @@ func (m model) footer() string {
 		homeHint = lipgloss.NewStyle().Background(brandRed).Foreground(brightColor).Bold(true).Render(" h home/clear ")
 	}
 	right := accentKey.Render("H help") + helpStyle.Render(" · ") + homeHint +
-		helpStyle.Render(" · " + keys)
+		helpStyle.Render(" · "+keys)
 	gap := m.width - lipgloss.Width(statusLine) - lipgloss.Width(right)
 	if gap < 1 {
 		return lipgloss.JoinVertical(lipgloss.Left, statusLine, right)

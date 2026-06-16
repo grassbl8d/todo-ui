@@ -1242,3 +1242,188 @@ func TestViewRendersWithoutPanic(t *testing.T) {
 		t.Fatal("view should render content")
 	}
 }
+
+func TestArchiveRemovesFromRecents(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel()
+	m.cache.Projects["p"] = apiProject{ID: "p", Name: "Japan June 2026"}
+	m.deriveAll()
+	p := Project{ID: "p", Name: "#Japan June 2026"}
+	m.recents = []Project{p}
+
+	m.archiveProjectLocal(p)
+	for _, r := range m.recents {
+		if r.ID == "p" {
+			t.Fatal("an archived project must be removed from the recents list")
+		}
+	}
+
+	// Delete should also prune recents.
+	m.cache.Projects["q"] = apiProject{ID: "q", Name: "Old"}
+	m.deriveAll()
+	q := Project{ID: "q", Name: "#Old"}
+	m.recents = []Project{q}
+	m.deleteProjectLocal(q)
+	for _, r := range m.recents {
+		if r.ID == "q" {
+			t.Fatal("a deleted project must be removed from the recents list")
+		}
+	}
+}
+
+func TestCompletedFetchMergesServerItems(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel()
+	m.width, m.height = 100, 30
+	m.list.SetSize(100, 24)
+	m.cache.Projects["p"] = apiProject{ID: "p", Name: "Work"}
+	m.deriveAll()
+	m.projectView = "#Work"
+	m.completedView = 2 // completed-only
+	m.applyView()
+
+	// Simulate the server returning a completed task not in the local cache.
+	nm, _ := m.Update(completedFetchedMsg{items: []apiItem{
+		{ID: "srv1", Content: "From server", ProjectID: "p", Checked: true, AddedAt: "2026-01-01"},
+	}})
+	m = nm.(model)
+
+	if _, ok := m.cache.Items["srv1"]; !ok {
+		t.Fatal("server completed item should be merged into the cache")
+	}
+	found := false
+	for _, it := range m.list.Items() {
+		ti := it.(taskItem)
+		if !ti.sep && ti.t.Content == "From server" && ti.t.Done {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("server completed task should appear in the completed view")
+	}
+}
+
+func TestCompletedViewToggle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel()
+	m.width, m.height = 100, 30
+	m.list.SetSize(100, 24)
+	m.cache.Projects["p"] = apiProject{ID: "p", Name: "Work"}
+	m.cache.Items["a"] = apiItem{ID: "a", Content: "Active one", ProjectID: "p", AddedAt: "2026-01-02"}
+	m.cache.Items["b"] = apiItem{ID: "b", Content: "Done one", ProjectID: "p", Checked: true, AddedAt: "2026-01-01"}
+	m.deriveAll()
+	m.projectView = "#Work" // completed view is per-project
+	m.applyView()
+
+	countItems := func() (active, done, seps int) {
+		for _, it := range m.list.Items() {
+			ti := it.(taskItem)
+			switch {
+			case ti.sep:
+				seps++
+			case ti.t.Done:
+				done++
+			default:
+				active++
+			}
+		}
+		return
+	}
+
+	// Default: active only.
+	if a, d, _ := countItems(); a != 1 || d != 0 {
+		t.Fatalf("default view should show 1 active, 0 done; got %d/%d", a, d)
+	}
+	// Y → active + completed (with a separator).
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	m = nm.(model)
+	if a, d, s := countItems(); a != 1 || d != 1 || s != 1 {
+		t.Fatalf("both view should show 1 active, 1 done, 1 sep; got %d/%d/%d", a, d, s)
+	}
+	// Y → completed only.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	m = nm.(model)
+	if a, d, s := countItems(); a != 0 || d != 1 || s != 0 {
+		t.Fatalf("completed-only view should show 0 active, 1 done; got %d/%d/%d", a, d, s)
+	}
+	// Completing a completed task is blocked (read-only).
+	m.list.Select(0)
+	q := len(m.queue)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = nm.(model)
+	if len(m.queue) != q {
+		t.Fatal("completing a read-only completed task should be blocked")
+	}
+	// Capital C reopens the highlighted completed task.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")})
+	m = nm.(model)
+	if m.cache.Items["b"].Checked {
+		t.Fatal("C should reopen (un-complete) the highlighted task")
+	}
+	reopened := false
+	for _, c := range m.queue {
+		if c.Type == "item_uncomplete" {
+			reopened = true
+		}
+	}
+	if !reopened {
+		t.Fatal("C should queue an item_uncomplete command")
+	}
+	// Y → back to active only.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	m = nm.(model)
+	if m.completedView != 0 {
+		t.Fatalf("Y should cycle back to active-only, got %d", m.completedView)
+	}
+}
+
+func TestCompletedSeparatorSkippedOnNav(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel()
+	m.width, m.height = 100, 30
+	m.list.SetSize(100, 24)
+	m.cache.Projects["p"] = apiProject{ID: "p", Name: "Work"}
+	m.cache.Items["a"] = apiItem{ID: "a", Content: "Active", ProjectID: "p", AddedAt: "2026-01-02"}
+	m.cache.Items["b"] = apiItem{ID: "b", Content: "Done", ProjectID: "p", Checked: true, AddedAt: "2026-01-01"}
+	m.deriveAll()
+	m.projectView = "#Work"
+	m.applyView()
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")}) // active+completed
+	m = nm.(model)
+
+	m.list.Select(0) // the single active task
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(model)
+	it, ok := m.list.SelectedItem().(taskItem)
+	if !ok || it.sep {
+		t.Fatalf("down should skip the separator, landed on sep=%v", ok && it.sep)
+	}
+	if !it.t.Done {
+		t.Fatalf("down from the last active task should land on the first completed task, got %q", it.t.Content)
+	}
+}
+
+func TestColonQuit(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 80, 24
+	// ":" opens the command line.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+	m = nm.(model)
+	if m.mode != modeCommand {
+		t.Fatalf(": should open the command line, mode=%d", m.mode)
+	}
+	for _, r := range "q" {
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = nm.(model)
+	}
+	// Enter runs :q → should issue tea.Quit.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal(":q then Enter should quit (expected a Quit command)")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal(":q should produce a quit message")
+	} else if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf(":q should produce tea.QuitMsg, got %T", msg)
+	}
+}

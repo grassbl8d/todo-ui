@@ -91,3 +91,17 @@ func pushRecentProject(ps []Project, p Project) []Project {
 	}
 	return out
 }
+
+// removeRecentProject drops a project (by id) from the recents list.
+func removeRecentProject(ps []Project, id string) []Project {
+	if id == "" {
+		return ps
+	}
+	out := ps[:0:0]
+	for _, x := range ps {
+		if x.ID != id {
+			out = append(out, x)
+		}
+	}
+	return out
+}

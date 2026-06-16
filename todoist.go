@@ -10,6 +10,7 @@ type Task struct {
 	Labels    string // "@a @b"
 	Content   string
 	Recurring bool
+	Done      bool // completed (shown only in the read-only completed view)
 }
 
 // Project is a lightweight id+name pair used for the pickers.

@@ -27,10 +27,10 @@ func genID() string {
 
 // quickParsed is the result of parsing a quick-add string.
 type quickParsed struct {
-	Content    string
-	Labels     []string
-	Priority   int    // API priority 1..4 (4 = highest); 1 if unset
-	DueString  string // natural-language due, parsed server-side on sync
+	Content   string
+	Labels    []string
+	Priority  int    // API priority 1..4 (4 = highest); 1 if unset
+	DueString string // natural-language due, parsed server-side on sync
 }
 
 var dueKeywords = map[string]bool{
@@ -491,6 +491,85 @@ func FilterTasks(query string) ([]apiItem, error) {
 	return all, nil
 }
 
+// FetchCompletedTasks pulls completed tasks from Todoist (last ~3 months),
+// optionally scoped to one project. Completed records are mapped to apiItems
+// flagged Checked so they slot straight into the cache / completed view.
+func FetchCompletedTasks(projectID string) ([]apiItem, error) {
+	token, err := Token()
+	if err != nil {
+		return nil, err
+	}
+	until := time.Now().UTC()
+	since := until.AddDate(0, -3, 0) // endpoint allows at most a 3-month window
+	var all []apiItem
+	cursor := ""
+	for {
+		u := "https://api.todoist.com/api/v1/tasks/completed/by_completion_date" +
+			"?since=" + url.QueryEscape(since.Format("2006-01-02T15:04:05")) +
+			"&until=" + url.QueryEscape(until.Format("2006-01-02T15:04:05")) +
+			"&limit=200"
+		if projectID != "" {
+			u += "&project_id=" + url.QueryEscape(projectID)
+		}
+		if cursor != "" {
+			u += "&cursor=" + url.QueryEscape(cursor)
+		}
+		req, err := http.NewRequest("GET", u, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+		if err != nil {
+			return nil, err
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			msg := strings.TrimSpace(string(data))
+			if len(msg) > 160 {
+				msg = msg[:160]
+			}
+			return nil, fmt.Errorf("completed %d: %s", resp.StatusCode, msg)
+		}
+		var out struct {
+			Items []struct {
+				ID          string   `json:"id"`
+				TaskID      string   `json:"task_id"`
+				ProjectID   string   `json:"project_id"`
+				Content     string   `json:"content"`
+				CompletedAt string   `json:"completed_at"`
+				Priority    int      `json:"priority"`
+				Labels      []string `json:"labels"`
+			} `json:"items"`
+			NextCursor *string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		for _, it := range out.Items {
+			id := it.TaskID
+			if id == "" {
+				id = it.ID
+			}
+			all = append(all, apiItem{
+				ID:        id,
+				Content:   it.Content,
+				ProjectID: it.ProjectID,
+				Priority:  it.Priority,
+				Labels:    it.Labels,
+				Checked:   true,
+				AddedAt:   it.CompletedAt,
+			})
+		}
+		if out.NextCursor == nil || *out.NextCursor == "" || len(all) >= 500 {
+			break
+		}
+		cursor = *out.NextCursor
+	}
+	return all, nil
+}
+
 // Merge applies a sync response into the cache (full or incremental) and removes
 // optimistic temp-id entries that now have real ids.
 func (c *Cache) Merge(sr *syncResponse) {
@@ -611,6 +690,25 @@ func (c *Cache) AllTasks() []Task {
 	out := make([]Task, len(items))
 	for i, it := range items {
 		out[i] = c.toTask(it)
+	}
+	return out
+}
+
+// CompletedTasks returns completed (checked, not deleted) tasks known to the
+// local cache, newest-added first. Each is flagged Done for read-only display.
+func (c *Cache) CompletedTasks() []Task {
+	items := make([]apiItem, 0)
+	for _, it := range c.Items {
+		if it.Checked && !it.IsDeleted {
+			items = append(items, it)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].AddedAt > items[j].AddedAt })
+	out := make([]Task, len(items))
+	for i, it := range items {
+		t := c.toTask(it)
+		t.Done = true
+		out[i] = t
 	}
 	return out
 }

@@ -138,7 +138,7 @@ entirely from the keyboard.
 | `p`             | **View by project** — pick a project; `ctrl+n` new, `ctrl+e` archive, `ctrl+d` delete |
 | `P`             | **Filter by priority** — pick p1–p4 from a menu              |
 | `^`             | **Pin (focus)** — show only the selected task; `:unpin` to release |
-| `i` / `I`       | **💡 Catch an idea / browse ideas** (saved locally)         |
+| `i` / `I`       | **💡 Catch an idea / browse ideas** (saved locally); `Enter` opens its 🗺 **mind map**, `R` renames it |
 | `+`             | **Toggle light / dark theme**                                |
 | `O` / `F` / `U` | **Tag / untag** the selected task as ongoing / follow-up / up next |
 | `o`             | **Ongoing view** — tasks with your ongoing label (default `@ongoing`) |
@@ -152,6 +152,8 @@ entirely from the keyboard.
 | `d`             | **Deadline is today**                                       |
 | `D`             | **Deadline is today or earlier**                            |
 | `R`             | **Recently added** — the last 10 tasks you created           |
+| `Y`             | **Show completed** (inside a project view only) — cycle active → active+completed → completed-only (read-only, under a separator) |
+| `C`             | **Reopen** the highlighted completed task (un-complete)      |
 | `/`             | **Find** — local text search, or a local filter expression  |
 | `?`             | **Online search** — full Todoist filter grammar (needs network) |
 | `1`–`7`         | **Sort** by priority / due / deadline / project / name / labels / date added (`0` = default; repeat to reverse) |
@@ -231,6 +233,59 @@ switching. A bright **📌 PINNED** banner is always visible with the release in
 To unpin, type **`:`** then **`unpin`** and Enter. Completing or deleting the pinned task
 auto-unpins. The pin is **per-session** — it only affects the todo-ui instance you set it
 in, so you can run several at once.
+
+### 🗺 Mind maps
+
+Every captured idea doubles as the root of a **keyboard-driven mind map**. Press **`I`** to
+browse ideas, then **`Enter`** (or `→`/`l`) on one to drop into mind-map mode. The map is
+drawn as a real **left-to-right diagram** — each node is a rounded box and parents fan out to
+their children through box-drawing connector lines, with the idea as the root box. The view
+scrolls to follow the cursor. Maps are saved locally alongside the idea, and the idea list
+shows a 🗺 badge with the node count.
+
+```
+                  ╭──────────╮     ╭───────────╮
+               ┌──┤ Location ├──┬──┤ Near work │
+╭─────────────╮│  ╰──────────╯  │  ╰───────────╯
+│ Buy a house ├┤                └──┤ Good schools …
+╰─────────────╯│  ╭────────╮
+               └──┤ Budget ├──────┤ Under 500k …
+                  ╰────────╯
+```
+
+| Key                | Action                                              |
+|--------------------|-----------------------------------------------------|
+| `↑`/`↓` · `j`/`k`  | Previous / next **sibling**                          |
+| `←`/`→` · `h`/`l`  | Go to parent / descend to first child               |
+| `r`                | Jump to the **root** node (left-most)               |
+| `R`                | **Rename the root** node (the idea itself; ≥1 char) |
+| `Tab`              | Add a **child** of the selected node                |
+| `Enter`            | Add a **sibling** after the selected node           |
+| `e` / `i`          | Edit the selected node's text                       |
+| `Space`            | Collapse / expand a branch (`(+n)` marks hidden kids) |
+| `d` / `Del`        | Delete the node and its subtree (asks y/n; a linked Todoist task is left in place) |
+| `t`                | **Mark / unmark as a task** — shows a `[ ]` checkbox |
+| `T`                | **Convert** marked tasks → tasks in a project (type a name to create it) |
+| `U`                | **Unbind** the idea's project and unlink its tasks (asks y/n) |
+| `x`                | **Complete / reopen** a task node (`[x]`); does nothing on a non-task node (use `d` to delete) |
+| `s`                | **Sync** with Todoist (push tasks, pull completions) |
+| `c` / `C`          | Cycle **outline** colour — `C` includes all children |
+| `v` / `V`          | Cycle **background** fill — `V` includes all children |
+| `` ` ``            | **Quick-action palette** (search & run any map command) |
+| `H` / `?`          | Dedicated mind-map help                              |
+| `Esc` / `q` / `b`  | Save and return to the idea list (`b` = back)       |
+
+New nodes open straight into edit mode; pressing `Esc` (or leaving them blank) discards an
+empty new node, so the tree never keeps placeholders. Selection is shown by **underlining**
+the current node, so a node's own colour stays visible while it's selected.
+
+**Tasks & sync.** `t` flags a node as a task; `T` turns every marked node into real Todoist
+tasks under a project you pick (type a new name and it's created on the spot). An idea **binds
+to a single project** — the bound name shows in the title (`🗺 Mind map → #Work`) and on the
+`T` hint; pressing `T` again just tops up newly-marked tasks. Each node is **linked** to its
+task, so `x` completes it (and the task on next `s` sync), and if you tick the task off in
+Todoist it shows as `[x]` here after a sync. `U` unbinds the project and unlinks the generated
+tasks. There are **10 node colours** that `c`/`C` (outline) and `b`/`B` (fill) cycle through.
 
 ### Theme
 
