@@ -3,9 +3,13 @@
 A fast, colourful **terminal UI for [Todoist](https://todoist.com)**, built in Go with
 [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss).
 
+![todo-ui](docs/images/todo-ui.png)
+
 It talks to Todoist directly over the **Sync API** and is **offline-first**: it keeps a
 local cache on disk, applies your changes instantly, queues them, and pushes everything
 to the server when you sync.
+
+![todoist tasks](docs/images/todo-task-list.png)
 
 ```
  ✓ Todoist   all tasks   ⇅ due date ↑
@@ -22,6 +26,9 @@ to the server when you sync.
 
 - **Guided onboarding** — prompts for your API token on first run and validates it on
   every launch (re-prompts if it's been revoked).
+
+![easy onboarding](docs/images/todo-ui-onboarding.png)
+
 - **Offline-first** — works fully offline from a local cache; changes queue up and push
   on `s` (sync). A background sync runs on startup when you're online.
 - **Browse** all tasks with priority-coloured markers (p1 red · p2 orange · p3 blue · p4 grey).
@@ -235,6 +242,8 @@ auto-unpins. The pin is **per-session** — it only affects the todo-ui instance
 in, so you can run several at once.
 
 ### 🗺 Mind maps
+
+![terminal mind map](docs/images/todo-mindmap-mode.png)
 
 Every captured idea doubles as the root of a **keyboard-driven mind map**. Press **`I`** to
 browse ideas, then **`Enter`** (or `→`/`l`) on one to drop into mind-map mode. The map is
