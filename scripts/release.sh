@@ -251,5 +251,11 @@ git push origin "$branch"
 git push origin "$VERSION"
 gh release create "$VERSION" "${artifacts[@]}" --title "$VERSION" --generate-notes
 
+# Refresh the repo-root ./todo-ui binary at the released version. Local installs
+# that symlink to it (e.g. /opt/homebrew/bin/todo-ui) then run the new version
+# without a manual rebuild. Best-effort: the release already succeeded above.
+echo "==> refreshing local ./todo-ui binary to $VERSION"
+go build -ldflags "$LD" -o todo-ui . || echo "   (warning: local rebuild failed; run 'go build -o todo-ui .' yourself)"
+
 echo
 echo "Released: https://github.com/grassbl8d/todo-ui/releases/tag/$VERSION"

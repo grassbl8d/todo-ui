@@ -76,7 +76,9 @@ scripts/release.sh
   │     SHA256SUMS.txt
   ├─ print artifact list
   └─ "Proceed? [y/N]"   ← nothing pushed before this
-        └─ git tag · push branch + tag · gh release create --generate-notes
+        ├─ git tag · push branch + tag · gh release create --generate-notes
+        └─ rebuild ./todo-ui at the new version (so symlinked local
+           installs, e.g. /opt/homebrew/bin/todo-ui, run it immediately)
 ```
 
 ## Modes & flags
