@@ -232,6 +232,8 @@ const (
 	modeIdeaList      // 💡 browse captured ideas
 	modeDeadlinePick  // pick a deadline from quick options
 	modeTimezone      // searchable IANA timezone picker
+	modePalette       // ` quick-action palette: search & run any command
+	modeAbout         // ~ about screen (logo + contributors)
 )
 
 // deadlineOptions are the quick picks shown when setting a deadline.
@@ -346,6 +348,8 @@ type model struct {
 	tzAll        []string   // all selectable IANA zone names (loaded on first open)
 	tzQuery      string     // type-to-filter text in the timezone picker
 	tzCursor     int        // selected row in the timezone picker
+	palQuery     string     // type-to-filter text in the ` quick-action palette
+	palCursor    int        // selected row in the quick-action palette
 	pinnedID     string     // when set, only this task is shown (focus mode)
 	showComments bool       // on the pinned focus screen, show the comments list
 	projDelTarget Project   // project pending delete-confirmation
@@ -1097,6 +1101,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDeadlinePick(msg)
 		case modeTimezone:
 			return m.updateTimezone(msg)
+		case modePalette:
+			return m.updatePalette(msg)
+		case modeAbout:
+			// Any key closes the about screen.
+			m.mode = modeList
+			return m, nil
 		}
 	}
 
@@ -1136,6 +1146,16 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "`":
+		// Quick-action palette — search & run any command (VSCode-style).
+		m.mode = modePalette
+		m.palQuery = ""
+		m.palCursor = 0
+		return m, nil
+	case "~":
+		// About screen.
+		m.mode = modeAbout
+		return m, nil
 	case "+":
 		m.settings.Light = !m.settings.Light
 		m.settings.Save()
@@ -2303,6 +2323,14 @@ func (m model) View() string {
 		return m.timezoneView(header)
 	}
 
+	if m.mode == modePalette {
+		return m.paletteView(header)
+	}
+
+	if m.mode == modeAbout {
+		return m.aboutView()
+	}
+
 	if m.mode == modeHelp {
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.helpView())
 	}
@@ -2770,6 +2798,215 @@ func (m model) timezoneView(header string) string {
 	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, lines...)...)
 }
 
+// paletteAction is one entry in the ` quick-action palette: a single-key
+// command (handled by updateList) and a short human label.
+type paletteAction struct{ key, label string }
+
+// paletteActions are the runnable commands shown in the quick-action palette,
+// in a sensible default order. Every key is a single rune updateList handles.
+var paletteActions = []paletteAction{
+	{"a", "Add a task (choose project)"},
+	{"A", "Add a task to the recent project"},
+	{"c", "Complete the selected task"},
+	{"x", "Delete the selected task"},
+	{"/", "Search tasks"},
+	{"?", "Online search (Todoist filter syntax)"},
+	{"p", "View by project"},
+	{"P", "Filter by priority"},
+	{"o", "Ongoing view"},
+	{"f", "Follow-up view"},
+	{"u", "Up Next view"},
+	{"t", "Due today"},
+	{"T", "Due today or earlier"},
+	{"W", "Due this or last week"},
+	{"m", "Due this month"},
+	{"M", "Due this or last month"},
+	{"d", "Deadline today"},
+	{"D", "Deadline today or earlier"},
+	{"R", "Recently added"},
+	{"O", "Tag selected: ongoing"},
+	{"F", "Tag selected: follow-up"},
+	{"U", "Tag selected: up next"},
+	{"^", "Pin selected (focus mode)"},
+	{"i", "Catch an idea"},
+	{"I", "Browse captured ideas"},
+	{"+", "Change theme (light / dark)"},
+	{",", "Menu / settings"},
+	{"s", "Sync now"},
+	{"r", "Refresh from cache"},
+	{"H", "Help"},
+	{"~", "About"},
+	{"X", "Clear data"},
+	{"b", "Back (previous view)"},
+	{"h", "Home (clear filters & views)"},
+	{"1", "Sort by priority"},
+	{"2", "Sort by due date"},
+	{"3", "Sort by deadline"},
+	{"4", "Sort by project"},
+	{"5", "Sort by name"},
+	{"6", "Sort by labels"},
+	{"0", "Sort: default Todoist order"},
+}
+
+// palFiltered returns the actions matching the current type-to-filter query.
+func (m model) palFiltered() []paletteAction {
+	q := strings.ToLower(strings.TrimSpace(m.palQuery))
+	if q == "" {
+		return paletteActions
+	}
+	var out []paletteAction
+	for _, a := range paletteActions {
+		if strings.Contains(strings.ToLower(a.label), q) || strings.ToLower(a.key) == q {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// updatePalette drives the ` quick-action palette; enter runs the selected
+// command by re-dispatching its key through updateList.
+func (m model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	matches := m.palFiltered()
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.mode = modeList
+		return m, nil
+	case "enter":
+		m.mode = modeList
+		if len(matches) == 0 {
+			return m, nil
+		}
+		if m.palCursor >= len(matches) {
+			m.palCursor = len(matches) - 1
+		}
+		act := matches[m.palCursor]
+		return m.updateList(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(act.key)})
+	case "up":
+		if m.palCursor > 0 {
+			m.palCursor--
+		}
+		return m, nil
+	case "down":
+		if m.palCursor < len(matches)-1 {
+			m.palCursor++
+		}
+		return m, nil
+	case "backspace":
+		if len(m.palQuery) > 0 {
+			m.palQuery = m.palQuery[:len(m.palQuery)-1]
+			m.palCursor = 0
+		}
+		return m, nil
+	default:
+		if len(msg.Runes) > 0 {
+			m.palQuery += string(msg.Runes)
+			m.palCursor = 0
+		}
+		return m, nil
+	}
+}
+
+// paletteView renders the ` quick-action palette.
+func (m model) paletteView(header string) string {
+	accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(subColor)
+	keyStyle := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	matches := m.palFiltered()
+
+	lines := []string{"", "  " + accent.Render("Quick action") + dim.Render("   search: ") + m.palQuery + "▏", ""}
+
+	const win = 8
+	start := 0
+	if m.palCursor >= win {
+		start = m.palCursor - win + 1
+	}
+	end := start + win
+	if end > len(matches) {
+		end = len(matches)
+	}
+	if len(matches) == 0 {
+		lines = append(lines, "  "+dim.Render("no matching action — try 'due', 'tag', 'sort'…"))
+	}
+	for i := start; i < end; i++ {
+		a := matches[i]
+		cur := "   "
+		key := keyStyle.Render(fmt.Sprintf("%3s", a.key))
+		label := dim.Render(a.label)
+		if i == m.palCursor {
+			cur = accent.Render(" ▸ ")
+			label = lipgloss.NewStyle().Foreground(brightColor).Bold(true).Render(a.label)
+		}
+		lines = append(lines, cur+key+"   "+label)
+	}
+	lines = append(lines, "")
+	if len(matches) > 0 {
+		lines = append(lines, dim.Render(fmt.Sprintf("  %d action(s) · showing %d–%d", len(matches), start+1, end)))
+	}
+	lines = append(lines, "", helpStyle.Render("  type to filter · ↑/↓ move · enter run · esc cancel"))
+	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, lines...)...)
+}
+
+// aboutGlyphs are 5-row block letters used to draw the TODO-UI banner.
+var aboutGlyphs = map[rune][5]string{
+	'T': {"███████", "   █   ", "   █   ", "   █   ", "   █   "},
+	'O': {" █████ ", "██   ██", "██   ██", "██   ██", " █████ "},
+	'D': {"██████ ", "██   ██", "██   ██", "██   ██", "██████ "},
+	'U': {"██   ██", "██   ██", "██   ██", "██   ██", " █████ "},
+	'I': {"███", " █ ", " █ ", " █ ", "███"},
+	'-': {"     ", "     ", "█████", "     ", "     "},
+}
+
+// aboutBanner assembles the big "TODO-UI" block-letter banner, row by row.
+func aboutBanner() []string {
+	word := []rune("TODO-UI")
+	rows := make([]string, 5)
+	for r := 0; r < 5; r++ {
+		parts := make([]string, 0, len(word))
+		for _, ch := range word {
+			g := aboutGlyphs[ch]
+			parts = append(parts, g[r])
+		}
+		rows[r] = strings.Join(parts, "  ")
+	}
+	return rows
+}
+
+// aboutView renders the ~ about screen: a big centered logo + contributors.
+func (m model) aboutView() string {
+	brand := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(subColor)
+	val := lipgloss.NewStyle().Foreground(projectColor)
+	bright := lipgloss.NewStyle().Foreground(brightColor).Bold(true)
+
+	var b []string
+	b = append(b, "")
+	for _, row := range aboutBanner() {
+		b = append(b, brand.Render(row))
+	}
+	b = append(b,
+		"",
+		dim.Render("a fast, keyboard-driven Todoist client for the terminal"),
+		"",
+		val.Render("todo-ui "+version),
+		"",
+		dim.Render("──────────────  contributors  ──────────────"),
+		bright.Render("Carlo C."),
+		"",
+		dim.Render("press any key to close"),
+	)
+	card := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(brandRed).
+		Padding(1, 5).
+		Render(lipgloss.JoinVertical(lipgloss.Center, b...))
+	if m.width > 0 && m.height > 0 {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, card)
+	}
+	return card
+}
+
 // onboardView renders the first-run / invalid-token token entry screen.
 func (m model) onboardView(header string) string {
 	dim := lipgloss.NewStyle().Foreground(subColor)
@@ -2912,6 +3149,8 @@ func helpLines() []string {
 	return []string{
 		"",
 		head.Render("  Navigation"),
+		row("`", "Quick action — search & run any command"),
+		row("~", "About"),
 		row("↑/↓ j/k", "Move selection"),
 		row("n / v", "Next page / previous page (also pgdn/pgup)"),
 		row("b", "Back — return to the previous view (like a browser)"),
@@ -3092,6 +3331,9 @@ func (m model) footer() string {
 	if m.online {
 		badges = append(badges, lipgloss.NewStyle().Foreground(labelColor).Render("online"))
 	}
+	// Always-visible hint for the quick-action palette.
+	badges = append(badges, lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("`")+
+		lipgloss.NewStyle().Foreground(subColor).Render(" quick action"))
 	// Always-visible hint for the theme toggle.
 	badges = append(badges, lipgloss.NewStyle().Foreground(brandRed).Bold(true).Render("+")+
 		lipgloss.NewStyle().Foreground(subColor).Render(" change theme"))

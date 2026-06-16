@@ -161,6 +161,8 @@ entirely from the keyboard.
 | `s`             | **Sync** — push queued changes & pull updates               |
 | `,`             | **Menu** — labels, auto-sync interval, date format & timezone |
 | `X`             | **Clear data** — remove token, cache & queue (asks first)    |
+| `` ` ``         | **Quick action** — search & run any command (type to filter, ↑/↓, Enter) |
+| `~`             | **About** — logo, version & contributors                     |
 | `H`             | **Help** — open the (scrollable) keyboard reference          |
 | `q` / `Ctrl+C`  | Quit                                                         |
 
