@@ -34,7 +34,7 @@ to the server when you sync.
   **recently added** (`R`).
 - **Open & edit a task** (`Enter`) — change **priority, due date, deadline, labels,
   name**, add **comments**, or complete it.
-- **Sort** by priority, due date, **deadline**, project, name, or labels (`1`–`6`).
+- **Sort** by priority, due date, **deadline**, project, name, labels, or date added (`1`–`7`).
 - **Browser-style navigation** — `b` back, `h` home, `H`/`?` (scrollable) help.
 
 ---
@@ -154,7 +154,7 @@ entirely from the keyboard.
 | `R`             | **Recently added** — the last 10 tasks you created           |
 | `/`             | **Find** — local text search, or a local filter expression  |
 | `?`             | **Online search** — full Todoist filter grammar (needs network) |
-| `1`–`6`         | **Sort** by priority / due / deadline / project / name / labels (`0` = default; repeat to reverse) |
+| `1`–`7`         | **Sort** by priority / due / deadline / project / name / labels / date added (`0` = default; repeat to reverse) |
 | `b`             | **Back** — return to the previous view (like a browser)      |
 | `h` / `Esc`     | **Home** — clear all filters & views, back to all tasks      |
 | `r`             | Refresh the view from the local cache                       |

@@ -278,6 +278,7 @@ const (
 	sortProject                  // project name A→Z
 	sortName                     // task content A→Z
 	sortLabels                   // labels A→Z
+	sortAdded                    // date added (newest first)
 )
 
 func (s sortMode) label() string {
@@ -294,6 +295,8 @@ func (s sortMode) label() string {
 		return "name"
 	case sortLabels:
 		return "labels"
+	case sortAdded:
+		return "date added"
 	default:
 		return "default"
 	}
@@ -832,6 +835,16 @@ func (m *model) sortTasks(ts []Task) {
 		less = func(i, j int) bool {
 			return strings.ToLower(ts[i].Labels) < strings.ToLower(ts[j].Labels)
 		}
+	case sortAdded:
+		// Default direction (ascending) puts the most recently added first,
+		// matching the R "recently added" view; reverse for oldest first.
+		added := func(id string) string {
+			if m.cache != nil {
+				return m.cache.Items[id].AddedAt
+			}
+			return ""
+		}
+		less = func(i, j int) bool { return added(ts[i].ID) > added(ts[j].ID) }
 	}
 	sort.SliceStable(ts, func(i, j int) bool {
 		if m.sortDesc {
@@ -1138,7 +1151,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "a", "A", "p", "P", "o", "f", "t", "T", "W", "m", "M", "d", "D", "R",
-			"/", "?", ",", "b", "h", "1", "2", "3", "4", "5", "6", "0":
+			"/", "?", ",", "b", "h", "1", "2", "3", "4", "5", "6", "7", "0":
 			m.status = "📌 pinned — type :unpin (then Enter) to switch tasks"
 			return m, nil
 		}
@@ -1417,6 +1430,9 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "6":
 		m.setSort(sortLabels)
+		return m, nil
+	case "7":
+		m.setSort(sortAdded)
 		return m, nil
 	case "0":
 		m.setSort(sortNone)
@@ -2845,6 +2861,7 @@ var paletteActions = []paletteAction{
 	{"4", "Sort by project"},
 	{"5", "Sort by name"},
 	{"6", "Sort by labels"},
+	{"7", "Sort by date added (newest first)"},
 	{"0", "Sort: default Todoist order"},
 }
 
@@ -3215,6 +3232,7 @@ func helpLines() []string {
 		row("4", "Project (A → Z)"),
 		row("5", "Name (A → Z)"),
 		row("6", "Labels (A → Z)"),
+		row("7", "Date added (newest first; press again for oldest)"),
 		row("0", "Default Todoist order"),
 		"",
 		head.Render("  Search tips"),
