@@ -9,10 +9,13 @@
 #   scripts/release.sh --tag-only      # just create & push the version tag (no build)
 #   scripts/release.sh --no-publish    # build artifacts into dist/, don't publish
 #
-# The version is normally inferred: it starts at main.go's `var version` and
-# skips anything already tagged/released. Pass an explicit vX.Y.Z to override.
-# When the chosen version differs from main.go, the script bumps `var version`
-# and commits that change for you.
+# Versioning uses a Maven-style snapshot flow: between releases main.go's
+# `var version` carries a "-dev" suffix (e.g. v0.2.2-dev). A release strips the
+# suffix to a clean vX.Y.Z, tags/releases that, then bumps `var version` to the
+# NEXT "-dev" snapshot (e.g. v0.2.3-dev) and commits it — so any build off the
+# branch self-identifies as the upcoming dev version. The release version is
+# normally inferred from main.go + existing tags/releases; pass an explicit
+# vX.Y.Z to override. The git tag and GitHub release are always clean (no -dev).
 #
 # Nothing is pushed/published until the final confirmation (notarization still
 # uploads to Apple during the build — that's required). Flags:
@@ -69,6 +72,26 @@ bump_patch() {  # v0.1.6 -> v0.1.7
   echo "v${M}.${mi}.$((p + 1))"
 }
 
+# release_ver_of strips a pre-release suffix to the clean release version:
+# v0.2.2-dev -> v0.2.2, v0.2.2 -> v0.2.2.
+release_ver_of() { echo "${1%%-*}"; }
+
+# bump_to_snapshot advances main.go to the next "-dev" snapshot after a release
+# (e.g. v0.2.2 -> v0.2.3-dev) and commits it, so subsequent builds off the
+# branch self-identify as the upcoming dev version. Pushes unless --no-publish.
+# Relies on $VERSION (the clean release just cut) and $branch being set.
+bump_to_snapshot() {
+  local next; next="$(bump_patch "$VERSION")-dev"
+  echo "==> next dev cycle: main.go -> $next"
+  sed -i '' -E "s/^var version = \".*\"/var version = \"$next\"/" main.go
+  git add main.go
+  git commit -q -m "Start $next development"
+  if [ "$PUBLISH" != "no" ]; then
+    git push origin "$branch" \
+      || echo "   (warning: couldn't push the $next bump; run 'git push origin $branch' yourself)"
+  fi
+}
+
 # A version is "taken" if a tag exists locally or on origin, or a GitHub release
 # uses it. (Remote checks are best-effort and pass through when offline.)
 ver_is_taken() {
@@ -83,6 +106,8 @@ semver_only() { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
 
 SRC_VER="$(grep -E '^var version = ' main.go | sed -E 's/.*"(.*)".*/\1/')"
 [ -n "$SRC_VER" ] || die "couldn't read 'var version' from main.go"
+# The clean release form of the source version (drops any "-dev" snapshot suffix).
+SRC_REL="$(release_ver_of "$SRC_VER")"
 
 # ---- preflight ------------------------------------------------------------
 echo "==> preflight"
@@ -113,8 +138,8 @@ if [ -z "$VERSION" ]; then
   if command -v gh >/dev/null 2>&1; then
     rel_tags="$(gh release list --json tagName -q '.[].tagName' 2>/dev/null || true)"
   fi
-  VERSION="$(printf '%s\n%s\n%s\n' "$SRC_VER" "$remote_tags" "$rel_tags" | semver_only | sort -V | tail -1 || true)"
-  [ -n "$VERSION" ] || VERSION="$SRC_VER"
+  VERSION="$(printf '%s\n%s\n%s\n' "$SRC_REL" "$remote_tags" "$rel_tags" | semver_only | sort -V | tail -1 || true)"
+  [ -n "$VERSION" ] || VERSION="$SRC_REL"
   while ver_is_taken "$VERSION"; do VERSION="$(bump_patch "$VERSION")"; done
   echo "    auto-selected version: $VERSION  (source main.go is $SRC_VER)"
 else
@@ -154,6 +179,7 @@ if [ "$TAG_ONLY" -eq 1 ]; then
   git tag -a "$VERSION" -m "$VERSION"
   git push origin "$branch"
   git push origin "$VERSION"
+  bump_to_snapshot
   echo "Tagged and pushed $VERSION (no build/release made)."
   exit 0
 fi
@@ -270,6 +296,9 @@ gh release create "$VERSION" "${artifacts[@]}" --title "$VERSION" --generate-not
 # without a manual rebuild. Best-effort: the release already succeeded above.
 echo "==> refreshing local ./todo-ui binary to $VERSION"
 go build -ldflags "$LD" -o todo-ui . || echo "   (warning: local rebuild failed; run 'go build -o todo-ui .' yourself)"
+
+# Open the next dev cycle: main.go -> next "-dev" snapshot, committed and pushed.
+bump_to_snapshot
 
 echo
 echo "Released: https://github.com/grassbl8d/todo-ui/releases/tag/$VERSION"

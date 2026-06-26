@@ -6,8 +6,8 @@
 # normal `go test ./...` never runs them.
 #
 # Usage:
-#   scripts/integration-test.sh                 # read-only checks
-#   TODOUI_INTEGRATION_WRITE=1 scripts/integration-test.sh   # + create/delete round-trip
+#   scripts/todoist-api-test.sh                 # read-only checks
+#   TODOUI_INTEGRATION_WRITE=1 scripts/todoist-api-test.sh   # + create/delete round-trip
 #
 # A token is read from $TODOIST_API_TOKEN or ~/.config/todoui/config.json
 # (same as the app). Without one, the tests skip rather than fail.

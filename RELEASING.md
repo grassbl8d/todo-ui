@@ -40,16 +40,33 @@ made, and asks once before anything leaves your machine.
 
 3. `gh` is authenticated (`gh auth status`).
 
+## Versioning: snapshot (`-dev`) between releases
+
+This repo follows a Maven-style snapshot flow:
+
+- Between releases, `var version` in `main.go` carries a **`-dev`** suffix for
+  the *upcoming* version — e.g. after `v0.2.1` ships, `main.go` reads
+  `v0.2.2-dev`. Local/dev builds therefore self-identify as `v0.2.2-dev`
+  (`todo-ui --version`), clearly "newer than 0.2.1, not yet 0.2.2". The suffix
+  also sorts *below* the clean version in SemVer, mirroring Maven's SNAPSHOT.
+- A release **strips the `-dev`** to a clean `vX.Y.Z`, commits that, then
+  **tags and releases the clean version** (the git tag and GitHub release never
+  carry `-dev`).
+- Right after publishing, the script **bumps `var version` to the next
+  `-dev` snapshot** (`v0.2.3-dev`), commits `Start v0.2.3-dev development`, and
+  pushes — opening the next dev cycle automatically. Don't edit `var version`
+  by hand.
+
 ## How the version is chosen
 
 You normally don't pass a version. The script infers it:
 
-- It starts from `var version` in `main.go`, floored at the highest **pushed**
-  tag / published release, and skips anything already tagged or released.
-- Right now `main.go` is `v0.1.6` and it hasn't been released, so the next
-  release is **`v0.1.6`**. After that ships, the next run yields `v0.1.7`.
-- When the chosen version differs from `main.go`, the script **bumps
-  `var version` and commits that change for you** before tagging.
+- It starts from the clean release form of `main.go`'s `var version` (so
+  `v0.2.2-dev` → `v0.2.2`), floored at the highest **pushed** tag / published
+  release, and skips anything already tagged or released.
+- With `main.go` at `v0.2.2-dev` and `v0.2.1` released, the next release is
+  **`v0.2.2`**; afterwards `main.go` becomes `v0.2.3-dev` and the following run
+  yields `v0.2.3`.
 
 To force a specific version, pass it explicitly:
 
@@ -73,7 +90,7 @@ rejected. An explicit version is also refused if it's already tagged or released
 ```
 scripts/release.sh
   ├─ preflight: clean tree · gh auth · fetch tags
-  ├─ resolve version (auto or explicit); bump+commit main.go if needed
+  ├─ resolve clean release version (strips main.go's -dev); bump+commit if needed
   ├─ go test ./...
   ├─ Todoist integration guard (live API; runs if a token is present)
   ├─ build into dist/:
@@ -83,9 +100,10 @@ scripts/release.sh
   │     SHA256SUMS.txt
   ├─ print artifact list
   └─ "Proceed? [y/N]"   ← nothing pushed before this
-        ├─ git tag · push branch + tag · gh release create --generate-notes
-        └─ rebuild ./todo-ui at the new version (so symlinked local
-           installs, e.g. /opt/homebrew/bin/todo-ui, run it immediately)
+        ├─ git tag (clean vX.Y.Z) · push branch + tag · gh release create --generate-notes
+        ├─ rebuild ./todo-ui at the released version (so symlinked local
+        │  installs, e.g. /opt/homebrew/bin/todo-ui, run it immediately)
+        └─ bump main.go to the next -dev snapshot · commit · push
 ```
 
 ## Modes & flags
@@ -113,8 +131,8 @@ item add/complete/uncomplete/delete commands) still work, since that's the part
 most likely to break.
 
 ```bash
-scripts/integration-test.sh                      # read-only checks
-TODOUI_INTEGRATION_WRITE=1 scripts/integration-test.sh   # + create→complete→reopen→delete round-trip
+scripts/todoist-api-test.sh                      # read-only checks
+TODOUI_INTEGRATION_WRITE=1 scripts/todoist-api-test.sh   # + create→complete→reopen→delete round-trip
 ```
 
 Set `SKIP_INTEGRATION=1` to skip it during a release even when a token is
