@@ -375,7 +375,8 @@ go test ./...               # or call Go directly
 
 For the live Todoist API check and the full build/release workflow, see
 **[`DEVELOPING.md`](DEVELOPING.md)**. Per-version changes are in
-**[`RELEASE_NOTES.md`](RELEASE_NOTES.md)**.
+**[`RELEASE_NOTES.md`](RELEASE_NOTES.md)**, and planned features in
+**[`ROADMAP.md`](ROADMAP.md)**.
 
 ---
 
