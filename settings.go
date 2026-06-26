@@ -15,10 +15,11 @@ type Settings struct {
 	Light         bool   `json:"light"`          // light theme (false = dark, the default)
 	DateFormat    string `json:"date_format"`    // MDY (default), YMD, or DMY
 	Timezone      string `json:"timezone"`       // IANA zone for "today" math (default Asia/Manila)
+	DefaultSort   string `json:"default_sort"`   // sort applied on launch, e.g. "added-desc" (empty = added-desc)
 }
 
 func defaultSettings() Settings {
-	return Settings{OngoingLabel: "ongoing", FollowupLabel: "ffup", UpNextLabel: "upnext", SyncSeconds: 30, DateFormat: "MDY", Timezone: "Asia/Manila"}
+	return Settings{OngoingLabel: "ongoing", FollowupLabel: "ffup", UpNextLabel: "upnext", SyncSeconds: 30, DateFormat: "MDY", Timezone: "Asia/Manila", DefaultSort: "added-desc"}
 }
 
 func settingsPath() string {
@@ -66,6 +67,9 @@ func LoadSettings() Settings {
 	}
 	if s.Timezone == "" {
 		s.Timezone = "Asia/Manila"
+	}
+	if s.DefaultSort == "" {
+		s.DefaultSort = "added-desc" // newest-added first, the app default
 	}
 	return s
 }

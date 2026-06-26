@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // This file renders an idea's mind map as a real left-to-right diagram: every
@@ -60,6 +61,10 @@ var mindPalette = []lipgloss.Color{
 // mindInk is a near-black foreground used for text/borders on a filled box, so
 // the label stays readable on any background colour.
 var mindInk = lipgloss.Color("#0b0f19")
+
+// mindBlurColor is the faint grey the whole map is flattened to while zoomed, so
+// the centered popup reads as in-focus and the map as a blurred backdrop.
+var mindBlurColor = lipgloss.Color("#3a3f4b")
 
 // paletteColor returns the colour for a 1-based index, or "" for 0 (default).
 func paletteColor(idx int) lipgloss.Color {
@@ -457,16 +462,23 @@ func (m model) mindMapView(header string) string {
 		tHint = "T→" + bound + " · U unbind"
 	}
 	var footer string
-	if m.mode == modeMindEdit {
+	switch {
+	case m.mode == modeMindEdit:
 		footer = dim.Render("type · enter save · esc cancel")
-	} else {
+	case m.mindZoom:
+		// Zoom overlay: the selected node's full text floats over the map, which
+		// stays navigable underneath; z/esc close it.
+		footer = accentKey.Render("🔍 zoom") + dim.Render(
+			" · ↑↓/jk·←→/hl navigate · e edit · tab child · z/esc close · ") +
+			accentKey.Render("H") + dim.Render(" help")
+	default:
 		// "H help" is accented first so it stays visible, matching the task view.
 		footer = accentKey.Render("H help") + dim.Render(
-			" · ↑↓/jk siblings · ←→/hl parent·child · r root · tab child · enter sibling · e edit · t task · "+
+			" · ↑↓/jk siblings · ←→/hl parent·child · r root · tab child · enter sibling · e edit · z zoom · t task · "+
 				tHint+" · x done · d del · c/C colour · v/V fill · s sync · b back")
 	}
 
-	viewH := m.height - lipgloss.Height(header) - 3 // title + footer + gap
+	viewH := m.height - lipgloss.Height(header) - 4 // title + gap + footer + margin
 	if viewH < 3 {
 		viewH = 3
 	}
@@ -476,7 +488,7 @@ func (m model) mindMapView(header string) string {
 	}
 
 	if root == nil {
-		return lipgloss.JoinVertical(lipgloss.Left, header, title, "", dim.Render("  (empty)"), footer)
+		return lipgloss.JoinVertical(lipgloss.Left, header, title, "", dim.Render("  (empty)"), "", footer)
 	}
 
 	cv := newMindCanvas(cw, ch)
@@ -519,6 +531,10 @@ func (m model) mindMapView(header string) string {
 	scrollX := clamp(focus.x+focus.w/2-viewW/2, max0(cw-viewW))
 	scrollY := clamp(focus.cy-viewH/2, max0(ch-viewH))
 
+	// While zoomed, dim the whole map to a faint monochrome so the centered
+	// popup stands out — the terminal equivalent of blurring the background.
+	zoomDim := m.mindZoom && m.mode != modeMindEdit
+
 	// Emit visible rows, grouping consecutive cells that share styling so colour
 	// is applied per run rather than per cell.
 	var lines []string
@@ -553,6 +569,11 @@ func (m model) mindMapView(header string) string {
 			if !p.dirty {
 				fg, bg, bold, ul = "", "", false, false
 			}
+			if zoomDim && p.dirty {
+				// Flatten every painted cell to one faint colour (no fill,
+				// no bold, no underline) for the "blurred background" look.
+				fg, bg, bold, ul = mindBlurColor, "", false, false
+			}
 			if run.Len() > 0 && (fg != rFg || bg != rBg || bold != rBold || ul != rUL) {
 				flush()
 			}
@@ -582,8 +603,100 @@ func (m model) mindMapView(header string) string {
 		titleLine = title + dim.Render("   more: "+strings.Join(sh, " "))
 	}
 
+	// Zoom overlay: float the selected node's full text, centered over the
+	// (dimmed) map. Hidden while editing so it doesn't cover the live input.
+	if zoomDim {
+		ov := m.mindZoomOverlay(viewW)
+		for len(lines) < viewH { // pad the backdrop so the popup centers in it
+			lines = append(lines, "")
+		}
+		ovW := 0
+		if len(ov) > 0 {
+			ovW = ansi.StringWidth(ov[0])
+		}
+		top := max0((viewH - len(ov)) / 2)
+		left := max0((viewW - ovW) / 2)
+		lines = overlayAt(lines, ov, top, left)
+	}
+
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, header, titleLine, "", body, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, titleLine, "", body, "", footer)
+}
+
+// mindZoomOverlay renders a floating popup with the selected node's full,
+// untruncated text — the boxes in the map cap labels to mmMaxText runes. It
+// mirrors the node's own colours so the popup reads as "the same node, complete".
+func (m model) mindZoomOverlay(maxW int) []string {
+	rows := m.mindRows()
+	if len(rows) == 0 {
+		return nil
+	}
+	i := m.mindCursor
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(rows) {
+		i = len(rows) - 1
+	}
+	cur := rows[i]
+
+	var full string
+	var outline, bg int
+	if cur.isRoot {
+		idea := m.ideas[m.mindIdea]
+		full, outline, bg = idea.Text, idea.Color, idea.BG
+	} else {
+		full, outline, bg = nodeBoxText(cur.node), cur.node.Color, cur.node.BG
+	}
+	if strings.TrimSpace(full) == "" {
+		full = "·"
+	}
+
+	wrap := maxW - 8
+	if wrap < 20 {
+		wrap = 20
+	}
+	if wrap > 64 {
+		wrap = 64
+	}
+
+	border := brandRed
+	if c := paletteColor(outline); c != "" {
+		border = c
+	}
+	textStyle := lipgloss.NewStyle().Bold(true).Foreground(brightColor)
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).Padding(0, 1)
+	if bgCol := paletteColor(bg); bgCol != "" {
+		textStyle = textStyle.Foreground(mindInk).Background(bgCol)
+		box = box.Background(bgCol)
+	}
+	if ansi.StringWidth(full) > wrap {
+		textStyle = textStyle.Width(wrap) // wrap only when the text is too long
+	}
+	card := box.Render(textStyle.Render(full))
+	return strings.Split(card, "\n")
+}
+
+// overlayAt composites the ov lines onto bg starting at (top, left), preserving
+// the background to the left and right of the overlay. ANSI-aware so styled map
+// cells survive the cut.
+func overlayAt(bg, ov []string, top, left int) []string {
+	out := append([]string(nil), bg...)
+	for len(out) < top+len(ov) {
+		out = append(out, "")
+	}
+	for i, ovl := range ov {
+		y := top + i
+		bgLine := out[y]
+		ovW := ansi.StringWidth(ovl)
+		leftSeg := ansi.Truncate(bgLine, left, "")
+		if pad := left - ansi.StringWidth(leftSeg); pad > 0 {
+			leftSeg += strings.Repeat(" ", pad)
+		}
+		rightSeg := ansi.TruncateLeft(bgLine, left+ovW, "")
+		out[y] = leftSeg + ovl + rightSeg
+	}
+	return out
 }
 
 func max0(v int) int {
@@ -823,6 +936,8 @@ func (m model) mindHelpView(header string) string {
 		row("→ / l", "Descend to the first child"),
 		row("r", "Jump to the root node (left-most)"),
 		row("R", "Rename the root node (the idea itself)"),
+		row("z", "Zoom — overlay the selected node's full text on the map"),
+		row("", "the map stays navigable underneath; z / esc closes it"),
 		"",
 		head.Render("  Edit the tree"),
 		row("Tab", "Add a child of the selected node"),

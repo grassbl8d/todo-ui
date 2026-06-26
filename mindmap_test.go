@@ -33,6 +33,84 @@ func mindModel(t *testing.T) model {
 	return m
 }
 
+func TestMindMapZoomOverlayShowsFullText(t *testing.T) {
+	m := mindModel(t)
+	full := "is it actually possible for claude to add screen shots"
+	m.ideas = []Idea{{Text: "Root idea", At: nowStamp(), Children: []*MindNode{
+		{Text: full},
+		{Text: "second node"},
+	}}}
+	m.ideaCursor = 0
+	m.width = 120
+	m = keyType(m, tea.KeyEnter) // open the map (cursor on root idea)
+	m = key(m, 'l')              // descend onto the long child node
+	if m.mindRows()[m.mindCursor].node.Text != full {
+		t.Fatal("expected cursor on the long child node")
+	}
+	// Before zooming, the long label is truncated inside its box.
+	if strings.Contains(m.View(), full) {
+		t.Fatal("map should truncate the long label before zooming")
+	}
+
+	// z overlays the selected node's full text on top of the map.
+	m = key(m, 'z')
+	if !m.mindZoom {
+		t.Fatal("z should turn on the zoom overlay")
+	}
+	if m.mode != modeMindMap {
+		t.Fatalf("zoom stays in the map mode, got %d", m.mode)
+	}
+	v := m.View()
+	if !strings.Contains(v, full) {
+		t.Fatalf("zoom overlay should show the full node text, got:\n%s", v)
+	}
+	// The map renders behind the overlay: the title and an uncovered sibling box
+	// are still visible.
+	if !strings.Contains(v, "Mind map") || !strings.Contains(v, "second node") {
+		t.Fatalf("map should remain visible behind the overlay, got:\n%s", v)
+	}
+
+	// z again closes the overlay; the truncated label is back.
+	m = key(m, 'z')
+	if m.mindZoom {
+		t.Fatal("z again should close the overlay")
+	}
+	if strings.Contains(m.View(), full) {
+		t.Fatal("closing the overlay should return to the truncated map")
+	}
+}
+
+func TestMindMapZoomToggleHelpEsc(t *testing.T) {
+	m := mindModel(t)
+	m = keyType(m, tea.KeyEnter) // open the map, cursor on the root idea
+
+	m = key(m, 'z')
+	if !m.mindZoom {
+		t.Fatal("z should open the zoom overlay")
+	}
+	// H still opens help while zoomed, without losing the overlay.
+	m = key(m, 'H')
+	if m.mode != modeMindHelp {
+		t.Fatalf("H should open help while zoomed, mode=%d", m.mode)
+	}
+	if !m.mindZoom {
+		t.Fatal("opening help should not clear the zoom")
+	}
+	m = key(m, 'x') // any key closes the help → back to the zoomed map
+	if m.mode != modeMindMap || !m.mindZoom {
+		t.Fatalf("closing help should return to the zoomed map, mode=%d zoom=%v", m.mode, m.mindZoom)
+	}
+	// First esc closes the overlay (stays in the map); a second esc leaves.
+	m = keyType(m, tea.KeyEsc)
+	if m.mindZoom || m.mode != modeMindMap {
+		t.Fatalf("esc should close the overlay but stay in the map, zoom=%v mode=%d", m.mindZoom, m.mode)
+	}
+	m = keyType(m, tea.KeyEsc)
+	if m.mode != modeIdeaList {
+		t.Fatalf("a second esc should return to the idea list, mode=%d", m.mode)
+	}
+}
+
 func TestMindMapEnterOpensMap(t *testing.T) {
 	m := mindModel(t)
 	m = keyType(m, tea.KeyEnter) // open the selected idea as a mind map

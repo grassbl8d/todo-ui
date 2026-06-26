@@ -16,8 +16,10 @@ import (
 )
 
 // version is the default shown in-app; release builds override it with
-// -ldflags "-X main.version=vX.Y.Z". Bump this when cutting a new version.
-var version = "v0.2.1"
+// -ldflags "-X main.version=vX.Y.Z". Between releases this carries a "-dev"
+// snapshot suffix for the upcoming version; scripts/release.sh strips it to cut
+// the clean release, then bumps it to the next "-dev" — don't edit it by hand.
+var version = "v0.2.2-dev"
 
 // ---------- theming (light / dark) ----------
 
@@ -268,6 +270,7 @@ const (
 	modeIdeaList          // 💡 browse captured ideas
 	modeIdeaRename        // 💡 rename the selected idea
 	modeDeadlinePick      // pick a deadline from quick options
+	modeDuePick           // pick a due date from quick options
 	modeTimezone          // searchable IANA timezone picker
 	modePalette           // ` quick-action palette: search & run any command
 	modeAbout             // ~ about screen (logo + contributors)
@@ -289,6 +292,21 @@ var deadlineOptions = []struct{ label, phrase string }{
 	{"Next month", "next month"},
 	{"Custom date…", "custom"},
 	{"Clear deadline", "clear"},
+}
+
+// dueOptions are the quick picks shown when setting a due date. Unlike the
+// deadline picker, the phrase is sent to Todoist as a natural-language due
+// string (so recurring picks like "every monday" keep their schedule); the
+// "custom" row drops to a free-text editor for anything not listed here.
+var dueOptions = []struct{ label, phrase string }{
+	{"Today", "today"},
+	{"Tomorrow", "tomorrow"},
+	{"This weekend (Sat)", "saturday"},
+	{"Next week", "next week"},
+	{"Every day", "every day"},
+	{"Every Monday", "every monday"},
+	{"Custom…", "custom"},
+	{"Clear due date", "clear"},
 }
 
 // editField is which task field the detail editor is changing.
@@ -321,7 +339,7 @@ const (
 	sortProject                  // project name A→Z
 	sortName                     // task content A→Z
 	sortLabels                   // labels A→Z
-	sortAdded                    // date added (newest first)
+	sortAdded                    // date added (descending = newest first by default)
 )
 
 func (s sortMode) label() string {
@@ -343,6 +361,62 @@ func (s sortMode) label() string {
 	default:
 		return "default"
 	}
+}
+
+// sortKey is the short token used to persist a sortMode in settings.json.
+func (s sortMode) sortKey() string {
+	switch s {
+	case sortPriority:
+		return "priority"
+	case sortDue:
+		return "due"
+	case sortDeadline:
+		return "deadline"
+	case sortProject:
+		return "project"
+	case sortName:
+		return "name"
+	case sortLabels:
+		return "labels"
+	case sortAdded:
+		return "added"
+	default:
+		return "none"
+	}
+}
+
+// formatDefaultSort encodes a sort mode + direction as a settings token, e.g.
+// "added-desc" or "priority-asc" ("none" carries no direction).
+func formatDefaultSort(s sortMode, desc bool) string {
+	if s == sortNone {
+		return "none"
+	}
+	dir := "asc"
+	if desc {
+		dir = "desc"
+	}
+	return s.sortKey() + "-" + dir
+}
+
+// parseDefaultSort decodes a settings token back into a mode + direction. An
+// empty or unrecognized token falls back to date-added descending (the default).
+func parseDefaultSort(tok string) (sortMode, bool) {
+	key, desc := tok, false
+	if i := strings.LastIndex(tok, "-"); i >= 0 {
+		key, desc = tok[:i], tok[i+1:] == "desc"
+	}
+	for s := sortNone; s <= sortAdded; s++ {
+		if s.sortKey() == key {
+			return s, desc
+		}
+	}
+	return sortAdded, true
+}
+
+// defaultSortCycle is the order the "Default sort" menu item steps through, each
+// with its natural direction (date-added newest-first; the rest ascending).
+var defaultSortCycle = []sortMode{
+	sortAdded, sortPriority, sortDue, sortDeadline, sortProject, sortName, sortLabels, sortNone,
 }
 
 // pickIntent distinguishes why the project picker is open.
@@ -410,7 +484,9 @@ type model struct {
 	mindEditNode  *MindNode   // node whose text is being edited (nil = the root idea)
 	mindEditNew   bool        // the edited node was just created (esc/empty discards it)
 	mindDelTarget *MindNode   // node pending delete-confirmation in the mind map
+	mindZoom      bool        // zoom (z): overlay the selected node's full text on the map
 	dlCursor      int         // selected row in the deadline picker
+	dueCursor     int         // selected row in the due-date picker
 	homeFlash     bool        // brief highlight of the home/clear hint when pressed
 	helpOffset    int         // scroll offset of the help page
 	addProject    Project     // project chosen for the task currently being added
@@ -480,6 +556,8 @@ func initialModel() model {
 		ideas:    LoadIdeas(),
 		status:   "ready",
 	}
+	// Default view sort comes from settings (defaults to date added descending).
+	m.sortMode, m.sortDesc = parseDefaultSort(m.settings.DefaultSort)
 	m.applyThemeFromSettings()
 	dateFmt = m.settings.DateFormat
 	applyTimezone(m.settings.Timezone)
@@ -1035,15 +1113,16 @@ func (m *model) sortTasks(ts []Task) {
 			return strings.ToLower(ts[i].Labels) < strings.ToLower(ts[j].Labels)
 		}
 	case sortAdded:
-		// Default direction (ascending) puts the most recently added first,
-		// matching the R "recently added" view; reverse for oldest first.
+		// Natural order: ascending (↑) is oldest-added first, descending (↓) is
+		// newest-added first. The app opens in descending so the latest tasks
+		// are on top.
 		added := func(id string) string {
 			if m.cache != nil {
 				return m.cache.Items[id].AddedAt
 			}
 			return ""
 		}
-		less = func(i, j int) bool { return added(ts[i].ID) > added(ts[j].ID) }
+		less = func(i, j int) bool { return added(ts[i].ID) < added(ts[j].ID) }
 	}
 	sort.SliceStable(ts, func(i, j int) bool {
 		if m.sortDesc {
@@ -1304,6 +1383,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// 💡 I opens the ideas list from any read/navigation view (not while
+		// typing, searching, or already inside the ideas/mind-map area).
+		if msg.String() == "I" && ideasHotkeyMode(m.mode) {
+			m.ideas = LoadIdeas()
+			m.ideaCursor = 0
+			m.mode = modeIdeaList
+			return m, nil
+		}
 		switch m.mode {
 		case modeList:
 			return m.updateList(msg)
@@ -1363,6 +1450,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateMindConfirmUnbind(msg)
 		case modeDeadlinePick:
 			return m.updateDeadlinePick(msg)
+		case modeDuePick:
+			return m.updateDuePick(msg)
 		case modeTimezone:
 			return m.updateTimezone(msg)
 		case modePalette:
@@ -1378,6 +1467,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+// ideasHotkeyMode reports whether the global "I" → ideas hotkey applies. It's
+// allowed in read/navigation views and suppressed wherever "I" would be a typed
+// character (inputs, search-pickers, confirms) or we're already in the ideas /
+// mind-map area.
+func ideasHotkeyMode(mo mode) bool {
+	switch mo {
+	case modeList, modeDetail, modeHelp, modeAbout, modeOptions:
+		return true
+	}
+	return false
 }
 
 func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1456,12 +1557,6 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.CursorEnd()
 		m.input.Focus()
 		return m, textinput.Blink
-	case "I":
-		// 💡 Browse captured ideas.
-		m.ideas = LoadIdeas()
-		m.ideaCursor = 0
-		m.mode = modeIdeaList
-		return m, nil
 	case "a":
 		// If already viewing a project, add straight into it.
 		if m.projectView != "" {
@@ -1748,7 +1843,9 @@ func (m *model) setSort(s sortMode) {
 		m.sortDesc = !m.sortDesc
 	} else {
 		m.sortMode = s
-		m.sortDesc = false
+		// Date-added is most useful newest-first, so it defaults to descending;
+		// every other sort starts ascending.
+		m.sortDesc = s == sortAdded
 	}
 	m.applyView()
 	if s == sortNone {
@@ -2140,6 +2237,50 @@ func (m model) updateDeadlinePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateDuePick mirrors the deadline picker but applies to the due field. The
+// phrase is sent to Todoist as-is (natural language), so recurring picks keep
+// their schedule; "custom" opens the free-text editor for anything else.
+func (m model) updateDuePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	choose := func(i int) (tea.Model, tea.Cmd) {
+		if i < 0 || i >= len(dueOptions) {
+			return m, nil
+		}
+		switch dueOptions[i].phrase {
+		case "custom":
+			return m, m.startEdit(efDate, "today · tomorrow 9am · every monday · (empty clears)", "")
+		case "clear":
+			m.setDue(m.detailID, "")
+			m.mode = modeDetail
+			return m, nil
+		default:
+			m.setDue(m.detailID, dueOptions[i].phrase)
+			m.mode = modeDetail
+			return m, nil
+		}
+	}
+	switch msg.String() {
+	case "esc", "b":
+		m.mode = modeDetail
+		return m, nil
+	case "up", "k":
+		if m.dueCursor > 0 {
+			m.dueCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.dueCursor < len(dueOptions)-1 {
+			m.dueCursor++
+		}
+		return m, nil
+	case "enter":
+		return choose(m.dueCursor)
+	}
+	if r := msg.String(); len(r) == 1 && r[0] >= '1' && r[0] <= '9' {
+		return choose(int(r[0] - '1'))
+	}
+	return m, nil
+}
+
 func (m model) updateIdeaAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -2390,6 +2531,11 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc", "q", "b":
+		// When zoomed (z), the first esc/q/b closes the zoom overlay.
+		if m.mindZoom {
+			m.mindZoom = false
+			return m, nil
+		}
 		// Back to the idea list (b is "back" everywhere).
 		SaveIdeas(m.ideas)
 		m.mode = modeIdeaList
@@ -2397,6 +2543,14 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "H", "?":
 		// Dedicated mind-map keyboard help.
 		m.mode = modeMindHelp
+		return m, nil
+	case "z":
+		// Zoom: overlay the selected node's full text on top of the map (labels
+		// are truncated to mmMaxText runes, so long nodes get cut off). The map
+		// stays visible behind; z again (or esc) closes it. You can still
+		// navigate underneath and the overlay follows the selection. H still
+		// opens help while zoomed.
+		m.mindZoom = !m.mindZoom
 		return m, nil
 	case "r":
 		// Jump back to the root node (left-most / first node).
@@ -2920,7 +3074,9 @@ func (m model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setPriorityDisplay(m.detailID, p)
 		return m, nil
 	case "t":
-		return m, m.startEdit(efDate, "today · tomorrow 9am · every monday · (empty clears)", "")
+		m.mode = modeDuePick
+		m.dueCursor = 0
+		return m, nil
 	case "D":
 		m.mode = modeDeadlinePick
 		m.dlCursor = 0
@@ -3116,6 +3272,15 @@ func (m model) optionRows() []struct{ label, value string } {
 	if m.settings.SyncSeconds > 0 {
 		sync = fmt.Sprintf("%d seconds", m.settings.SyncSeconds)
 	}
+	sm, desc := parseDefaultSort(m.settings.DefaultSort)
+	dir := "↑"
+	if desc {
+		dir = "↓"
+	}
+	sortVal := sm.label()
+	if sm != sortNone {
+		sortVal += " " + dir
+	}
 	return []struct{ label, value string }{
 		{"Ongoing label", "@" + m.settings.OngoingLabel},
 		{"Follow-up label", "@" + m.settings.FollowupLabel},
@@ -3123,6 +3288,7 @@ func (m model) optionRows() []struct{ label, value string } {
 		{"Background auto-sync", sync},
 		{"Date format", dateInputHint() + "  (enter to cycle)"},
 		{"Timezone", m.settings.Timezone + "  " + tzOffsetLabel(m.settings.Timezone) + "  (enter to choose)"},
+		{"Default sort", sortVal + "  (enter to cycle)"},
 	}
 }
 
@@ -3165,6 +3331,25 @@ func (m model) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tzQuery = ""
 			m.tzCursor = tzIndexOf(m.tzAll, m.settings.Timezone)
 			m.mode = modeTimezone
+			return m, nil
+		}
+		if m.optCursor == 6 {
+			// Default sort cycles in place, persists, and applies immediately.
+			cur, _ := parseDefaultSort(m.settings.DefaultSort)
+			idx := 0
+			for i, s := range defaultSortCycle {
+				if s == cur {
+					idx = i
+					break
+				}
+			}
+			next := defaultSortCycle[(idx+1)%len(defaultSortCycle)]
+			desc := next == sortAdded // date-added newest-first; others ascending
+			m.settings.DefaultSort = formatDefaultSort(next, desc)
+			m.settings.Save()
+			m.sortMode, m.sortDesc = next, desc
+			m.applyView()
+			m.status = "default sort: " + m.settings.DefaultSort
 			return m, nil
 		}
 		m.mode = modeOptionsEdit
@@ -3322,6 +3507,9 @@ func (m model) View() string {
 	} else if m.projectView != "" && m.completedView == 2 {
 		scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ completed only")
 	}
+	// Always-visible affordance for the ideas / mind-map area (opened with I).
+	scope += "   " + lipgloss.NewStyle().Foreground(labelColor).Bold(true).Render("💡 I") +
+		lipgloss.NewStyle().Foreground(dimColor).Render(" ideas")
 	left := lipgloss.JoinHorizontal(lipgloss.Center, title, statusStyle.Render(scope))
 	ver := lipgloss.NewStyle().Foreground(dimColor).Render("todo-ui " + version + " ")
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(ver)
@@ -3377,7 +3565,7 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, header, m.helpView())
 	}
 
-	if m.mode == modeDetail || m.mode == modeDetailEdit || m.mode == modeCommentAdd || m.mode == modeDeadlinePick {
+	if m.mode == modeDetail || m.mode == modeDetailEdit || m.mode == modeCommentAdd || m.mode == modeDeadlinePick || m.mode == modeDuePick {
 		if b := m.pinBanner(); b != "" {
 			return lipgloss.JoinVertical(lipgloss.Left, header, b, m.detailView())
 		}
@@ -4176,6 +4364,20 @@ func (m model) detailView() string {
 			lines = append(lines, cur+num+st.Render(o.label))
 		}
 		lines = append(lines, "", helpStyle.Render("  ↑/↓ or 1-8 · enter select · esc cancel"))
+	} else if m.mode == modeDuePick {
+		accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+		lines = append(lines, accent.Render("  Set due date"), "")
+		for i, o := range dueOptions {
+			cur := "    "
+			st := lipgloss.NewStyle().Foreground(textColor)
+			if i == m.dueCursor {
+				cur = "  " + accent.Render("▸ ")
+				st = lipgloss.NewStyle().Foreground(brightColor).Bold(true)
+			}
+			num := lipgloss.NewStyle().Foreground(subColor).Render(fmt.Sprintf("%d ", i+1))
+			lines = append(lines, cur+num+st.Render(o.label))
+		}
+		lines = append(lines, "", helpStyle.Render("  ↑/↓ or 1-8 · enter select · esc cancel"))
 	} else if m.mode == modeDetailEdit {
 		titles := map[editField]string{
 			efDate:     "Set due date",
@@ -4425,7 +4627,7 @@ func (m model) footer() string {
 
 	// "H help" and "h home" first and accented so they're always visible even if clipped.
 	accentKey := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
-	keys := "q quit · a add · enter view · c done · x del · ^ pin · i idea · / find · p project · O/F tag · , menu · s sync"
+	keys := "q quit · a add · enter view · c done · x del · ^ pin · i idea · I 💡 ideas · / find · p project · O/F tag · , menu · s sync"
 	homeHint := accentKey.Render("h home/clear")
 	if m.homeFlash {
 		homeHint = lipgloss.NewStyle().Background(brandRed).Foreground(brightColor).Bold(true).Render(" h home/clear ")

@@ -121,6 +121,112 @@ func TestDeadlinePicker(t *testing.T) {
 	}
 }
 
+func TestIdeasHotkeyFromDetail(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "task", Priority: 1}
+	m.deriveAll()
+	// open the detail view
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.mode != modeDetail {
+		t.Fatalf("enter should open detail, mode=%d", m.mode)
+	}
+	// I opens the ideas list from the detail view (global hotkey)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
+	m = nm.(model)
+	if m.mode != modeIdeaList {
+		t.Fatalf("I should open the ideas list from detail, mode=%d", m.mode)
+	}
+}
+
+func TestDefaultSortMenuCycles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate the settings.Save() this test triggers
+	m := newTestModel()
+	m.settings.DefaultSort = "added-desc"
+	// Open the menu and move the cursor onto the "Default sort" row (index 6).
+	m.mode = modeOptions
+	m.optCursor = 6
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	// added-desc → next in the cycle is priority-asc.
+	if m.settings.DefaultSort != "priority-asc" {
+		t.Fatalf("cycling from added-desc should give priority-asc, got %q", m.settings.DefaultSort)
+	}
+	if m.sortMode != sortPriority || m.sortDesc {
+		t.Fatalf("live sort should follow the menu: mode=%v desc=%v", m.sortMode, m.sortDesc)
+	}
+}
+
+func TestParseDefaultSortRoundTrip(t *testing.T) {
+	cases := []struct {
+		tok  string
+		sm   sortMode
+		desc bool
+	}{
+		{"added-desc", sortAdded, true},
+		{"priority-asc", sortPriority, false},
+		{"none", sortNone, false},
+		{"", sortAdded, true},           // empty → default
+		{"bogus-desc", sortAdded, true}, // unknown → default
+	}
+	for _, c := range cases {
+		sm, desc := parseDefaultSort(c.tok)
+		if sm != c.sm || desc != c.desc {
+			t.Errorf("parseDefaultSort(%q) = (%v,%v), want (%v,%v)", c.tok, sm, desc, c.sm, c.desc)
+		}
+	}
+	if got := formatDefaultSort(sortAdded, true); got != "added-desc" {
+		t.Fatalf("formatDefaultSort = %q", got)
+	}
+}
+
+func TestHeaderShowsIdeasAffordance(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 120, 40
+	m.list.SetSize(120, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "task", Priority: 1}
+	m.deriveAll()
+	if v := m.View(); !strings.Contains(v, "💡 I") {
+		t.Fatalf("task-list header should advertise the ideas affordance (💡 I), got:\n%s", v)
+	}
+}
+
+func TestDuePicker(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+	m.cache.Items["1"] = apiItem{ID: "1", Content: "task", Priority: 1}
+	m.deriveAll()
+	// open detail, then the due-date picker
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m = nm.(model)
+	if m.mode != modeDuePick {
+		t.Fatal("t should open the due-date picker")
+	}
+	// press 1 → Today: due is stored as the natural-language phrase.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	m = nm.(model)
+	if got := m.cache.Items["1"].Due; got == nil || got.String != "today" {
+		t.Fatalf("selecting Today should set due string to \"today\", got %+v", got)
+	}
+	if m.mode != modeDetail {
+		t.Fatalf("after picking, mode should return to detail, got %v", m.mode)
+	}
+
+	// a recurring pick keeps its phrase (so the schedule survives).
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("6")}) // "Every Monday"
+	m = nm.(model)
+	if got := m.cache.Items["1"].Due; got == nil || got.String != "every monday" {
+		t.Fatalf("recurring pick should set due to \"every monday\", got %+v", got)
+	}
+}
+
 func TestHomeFlash(t *testing.T) {
 	m := newTestModel()
 	m.width, m.height = 100, 40
@@ -221,6 +327,42 @@ func TestParseQuickAdd(t *testing.T) {
 	q2 := parseQuickAdd("Buy groceries")
 	if q2.Content != "Buy groceries" || q2.DueString != "" {
 		t.Fatalf("plain parse wrong: %+v", q2)
+	}
+
+	// "on"/"in"/"next"/"every" used as ordinary English must NOT be treated as
+	// a due date unless followed by a date-like word.
+	noDue := []string{
+		"Remind to add this on some features",
+		"Work on the dashboard",
+		"Investigate issue when on word confuses the parser",
+		"Interested in cooking lessons",
+		"Plan the next big release",
+		"Reward every developer",
+	}
+	for _, in := range noDue {
+		q := parseQuickAdd(in)
+		if q.DueString != "" {
+			t.Errorf("parseQuickAdd(%q): unexpected due %q (content %q)", in, q.DueString, q.Content)
+		}
+		if q.Content != in {
+			t.Errorf("parseQuickAdd(%q): content = %q, want full text", in, q.Content)
+		}
+	}
+
+	// the same prepositions DO start a date phrase when followed by a date word.
+	withDue := map[string]string{
+		"Pay rent on monday":       "on monday",
+		"Ship release on jan 5":    "on jan 5",
+		"Call mom in 3 days":       "in 3 days",
+		"Standup every day":        "every day",
+		"Review next week":         "next week",
+		"Renew cert on 2026-08-01": "on 2026-08-01",
+	}
+	for in, want := range withDue {
+		q := parseQuickAdd(in)
+		if q.DueString != want {
+			t.Errorf("parseQuickAdd(%q): due = %q, want %q", in, q.DueString, want)
+		}
 	}
 }
 
@@ -1049,11 +1191,11 @@ func TestEnterOpensDetail(t *testing.T) {
 	if !strings.Contains(m.View(), "Pay rent") {
 		t.Fatal("detail view should render the task content")
 	}
-	// open the date editor
+	// open the due-date picker
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
 	m = nm.(model)
-	if m.mode != modeDetailEdit || m.editField != efDate {
-		t.Fatal("'t' should open the date editor")
+	if m.mode != modeDuePick {
+		t.Fatal("'t' should open the due-date picker")
 	}
 	// esc returns to detail
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})

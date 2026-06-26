@@ -12,15 +12,15 @@ func TestSortByDateAdded(t *testing.T) {
 	ts := []Task{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 	m.sortMode = sortAdded
 
-	// Default direction: newest first.
-	m.sortDesc = false
+	// Descending (↓): newest first — this is the default the app opens in.
+	m.sortDesc = true
 	m.sortTasks(ts)
 	if got := []string{ts[0].ID, ts[1].ID, ts[2].ID}; got[0] != "b" || got[1] != "c" || got[2] != "a" {
 		t.Fatalf("newest-first order wrong: %v", got)
 	}
 
-	// Reversed: oldest first.
-	m.sortDesc = true
+	// Ascending (↑): oldest first.
+	m.sortDesc = false
 	m.sortTasks(ts)
 	if got := []string{ts[0].ID, ts[1].ID, ts[2].ID}; got[0] != "a" || got[1] != "c" || got[2] != "b" {
 		t.Fatalf("oldest-first order wrong: %v", got)
@@ -28,5 +28,17 @@ func TestSortByDateAdded(t *testing.T) {
 
 	if sortAdded.label() != "date added" {
 		t.Fatalf("label = %q", sortAdded.label())
+	}
+}
+
+// TestDefaultSortIsNewestFirst locks in that a freshly built model opens sorted
+// by created date descending (newest task on top).
+func TestDefaultSortIsNewestFirst(t *testing.T) {
+	m := initialModel()
+	if m.sortMode != sortAdded {
+		t.Fatalf("default sortMode = %v, want sortAdded", m.sortMode)
+	}
+	if !m.sortDesc {
+		t.Fatalf("default sortDesc = false, want true (descending / newest first)")
 	}
 }
