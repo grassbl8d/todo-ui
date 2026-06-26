@@ -21,16 +21,22 @@ made, and asks once before anything leaves your machine.
 ## One-time setup on this Mac
 
 1. Apple Developer ID cert + notary profile exist — see `SIGNING.md`.
-2. `SIGN_IDENTITY` is exported in `~/.zshrc` (already added):
+2. `SIGN_IDENTITY` is exported in your shell (e.g. `~/.zshrc`):
 
    ```bash
-   export SIGN_IDENTITY="Developer ID Application: CARLO CAMERINO (JRB94C42J3)"
+   export SIGN_IDENTITY="Developer ID Application: <YOUR NAME> (<TEAMID>)"
    ```
 
-   > This keychain has **two** Developer ID certs: `JRB94C42J3` (hotmail,
-   > **correct**) and `R3A9AC2668` (gmail, **never use**). Because more than one
-   > exists, the script will not auto-guess — the export tells it which to use.
-   > After editing `~/.zshrc`, open a new terminal (or `source ~/.zshrc`).
+   > Use the exact name of your Developer ID Application certificate. List the
+   > ones in your keychain with:
+   >
+   > ```bash
+   > security find-identity -v -p codesigning
+   > ```
+   >
+   > If more than one Developer ID Application cert exists, the script won't
+   > auto-guess — the export tells it which to use. After editing your shell rc,
+   > open a new terminal (or `source` it).
 
 3. `gh` is authenticated (`gh auth status`).
 
@@ -126,7 +132,7 @@ or uploaded.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SIGN_IDENTITY` | (must be set — two certs) | The Developer ID Application identity to sign with. |
+| `SIGN_IDENTITY` | (must be set if multiple certs exist) | The Developer ID Application identity to sign with. |
 | `NOTARY_PROFILE` | `todoui-notary` | The `notarytool` keychain profile. |
 
 ## Safety properties

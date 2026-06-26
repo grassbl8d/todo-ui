@@ -22,8 +22,9 @@
 #   --skip-mac     skip macOS sign/notarize (Linux/Windows only)
 #   --skip-tests   skip the `go test ./...` gate
 #
-# Signing identity: set SIGN_IDENTITY (this keychain has two Developer ID certs,
-# so it must be named — see RELEASING.md). NOTARY_PROFILE defaults to todoui-notary.
+# Signing identity: set SIGN_IDENTITY when the keychain holds more than one
+# Developer ID cert, so it must be named — see RELEASING.md. NOTARY_PROFILE
+# defaults to todoui-notary.
 #
 set -euo pipefail
 
@@ -159,7 +160,7 @@ fi
 
 # ---- resolve signing identity ---------------------------------------------
 # Auto-detect ONLY when exactly one Developer ID Application identity exists; if
-# several do (this keychain has two), refuse to guess and require SIGN_IDENTITY.
+# several do, refuse to guess and require SIGN_IDENTITY.
 if [ "$SKIP_MAC" -eq 0 ]; then
   if [ -z "${SIGN_IDENTITY:-}" ]; then
     ids="$(security find-identity -v -p codesigning 2>/dev/null \
