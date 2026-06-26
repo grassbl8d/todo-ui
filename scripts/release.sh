@@ -8,6 +8,7 @@
 #   scripts/release.sh v0.1.9          # release a specific version
 #   scripts/release.sh --tag-only      # just create & push the version tag (no build)
 #   scripts/release.sh --no-publish    # build artifacts into dist/, don't publish
+#   scripts/release.sh --dry-run       # validate only — change nothing (nothing to undo)
 #
 # Versioning uses a Maven-style snapshot flow: between releases main.go's
 # `var version` carries a "-dev" suffix (e.g. v0.2.2-dev). A release strips the
@@ -24,6 +25,8 @@
 #   --yes / -y     skip the confirmation prompt
 #   --skip-mac     skip macOS sign/notarize (Linux/Windows only)
 #   --skip-tests   skip the `go test ./...` gate
+#   --dry-run      validate a release (tests + compile every target) and print the
+#                  plan, changing nothing — no bump/commit/tag/push/notarize/dist
 #
 # Signing identity: set SIGN_IDENTITY when the keychain holds more than one
 # Developer ID cert, so it must be named — see RELEASING.md. NOTARY_PROFILE
@@ -41,6 +44,7 @@ PUBLISH="prompt"   # prompt | yes | no
 SKIP_MAC=0
 SKIP_TESTS=0
 TAG_ONLY=0
+DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --no-publish) PUBLISH="no" ;;
@@ -48,6 +52,9 @@ for arg in "$@"; do
     --skip-mac)   SKIP_MAC=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
     --tag-only)   TAG_ONLY=1 ;;
+    # --dry-run validates a release without changing anything: no version bump,
+    # commit, tag, push, or notarization. Implies no publish / no mac signing.
+    --dry-run)    DRY_RUN=1; PUBLISH="no"; SKIP_MAC=1 ;;
     -*)           die "unknown flag: $arg" ;;
     *)            [ -z "$VERSION" ] && VERSION="$arg" || die "unexpected argument: $arg" ;;
   esac
@@ -109,6 +116,12 @@ ver_is_taken() {
 
 semver_only() { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
 
+# have_token reports whether a Todoist token is reachable (env or config files).
+have_token() {
+  [ -n "${TODOIST_API_TOKEN:-}" ] || [ -f "$HOME/.config/todoui/config.json" ] \
+    || [ -f "$HOME/.config/todoist/config.json" ]
+}
+
 SRC_VER="$(grep -E '^var version = ' "$VERSION_FILE" | sed -E 's/.*"(.*)".*/\1/')"
 [ -n "$SRC_VER" ] || die "couldn't read 'var version' from $VERSION_FILE"
 # The clean release form of the source version (drops any "-dev" snapshot suffix).
@@ -122,8 +135,13 @@ need go; need git
 if [ "$TAG_ONLY" -eq 0 ] && [ "$SKIP_MAC" -eq 0 ]; then need codesign; need xcrun; need ditto; fi
 
 # Clean working tree so the tag (and any version-bump commit) is meaningful.
+# A dry run changes nothing, so a dirty tree is fine there.
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  die "working tree has uncommitted changes — commit or stash before releasing"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "    note: working tree is dirty (fine for a dry run)"
+  else
+    die "working tree has uncommitted changes — commit or stash before releasing"
+  fi
 fi
 
 if [ "$PUBLISH" != "no" ]; then
@@ -157,6 +175,48 @@ highest_local="$(git tag -l 'v*' | semver_only | sort -V | tail -1 || true)"
 if [ -n "$highest_local" ] && [ "$(printf '%s\n%s\n' "$VERSION" "$highest_local" | sort -V | tail -1)" = "$highest_local" ] \
    && [ "$highest_local" != "$VERSION" ]; then
   echo "    note: local tag $highest_local is higher than $VERSION but isn't pushed/released; releasing $VERSION."
+fi
+
+# ---- dry run --------------------------------------------------------------
+# Validate everything a real release does, but change NOTHING: no version bump,
+# commit, tag, push, notarization, or dist/ artifacts. Builds compile to
+# /dev/null. There is nothing to undo afterwards.
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo
+  echo "==> DRY RUN for $VERSION — validate only, nothing is changed"
+
+  if [ "$SKIP_TESTS" -eq 0 ]; then
+    echo "==> go test ./..."
+    go test ./...
+    if [ "${SKIP_INTEGRATION:-0}" != "1" ] && have_token; then
+      echo "==> integration guard (live Todoist API)"
+      go test -tags integration -run Integration -count=1 ./internal/todoui \
+        || die "Todoist integration guard failed — endpoints may have changed"
+    else
+      echo "    (skipping Todoist integration guard — no token or SKIP_INTEGRATION=1)"
+    fi
+  else
+    echo "    (skipping tests)"
+  fi
+
+  LD="-s -w -X $VERSION_PKG.version=${VERSION}"
+  for target in "darwin arm64" "darwin amd64" "linux amd64" "linux arm64" "windows amd64"; do
+    set -- $target
+    echo "==> build check: $1/$2"
+    GOOS="$1" GOARCH="$2" go build -ldflags "$LD" -o /dev/null . \
+      || die "build failed for $1/$2"
+  done
+
+  echo
+  echo "Dry run OK. A real 'scripts/release.sh' would:"
+  [ "$SRC_VER" != "$VERSION" ] && echo "  • bump $VERSION_FILE: $SRC_VER -> $VERSION (commit)"
+  echo "  • tag $VERSION (clean) and push the branch + tag"
+  echo "  • build + sign + notarize macOS, archive linux/windows, write SHA256SUMS"
+  echo "  • create the GitHub release $VERSION with all artifacts"
+  echo "  • bump $VERSION_FILE to $(bump_patch "$VERSION")-dev (commit + push)"
+  echo
+  echo "Nothing was changed — no commit, tag, push, notarization, or dist/. Nothing to undo."
+  exit 0
 fi
 
 # ---- bump the version file if needed --------------------------------------

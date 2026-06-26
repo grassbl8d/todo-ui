@@ -33,8 +33,9 @@ suffix for the upcoming version.
 
 ### Tooling & docs
 - `scripts/release.sh` now manages the `-dev` snapshot version automatically:
-  it cuts a clean `vX.Y.Z` tag/release, then bumps `main.go` to the next
-  `-dev`.
+  it cuts a clean `vX.Y.Z` tag/release, then bumps the version to the next
+  `-dev`. A new `--dry-run` flag validates a release (tests + compile every
+  target) and prints the plan while changing nothing.
 - New `scripts/build-local.sh` (build + test locally, no signing) and
   `scripts/run-tests.sh` (unit-test runner); `integration-test.sh` renamed to
   `scripts/todoist-api-test.sh` to make its Todoist scope clear.

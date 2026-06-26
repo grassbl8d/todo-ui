@@ -112,6 +112,7 @@ scripts/release.sh
 |---|---|
 | `scripts/release.sh` | Auto-version, full build + sign + notarize, prompt, then publish. |
 | `scripts/release.sh v0.2.0` | Same, but for an explicit version. |
+| `scripts/release.sh --dry-run` | **Validate only** — tests, compile every target, print the plan; changes nothing (no bump/commit/tag/push/notarize/`dist`). Nothing to undo. |
 | `scripts/release.sh --tag-only` | **Just create & push the version tag — no build, no release.** |
 | `scripts/release.sh --tag-only --no-publish` | Create the tag **locally only** (don't push). |
 | `scripts/release.sh --no-publish` | Build everything into `dist/`, print the manual publish commands, push nothing. |
