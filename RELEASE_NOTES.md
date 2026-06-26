@@ -5,12 +5,25 @@ tagged. Versioning follows a Maven-style snapshot flow (see
 [`DEVELOPING.md`](DEVELOPING.md)): between releases `main.go` carries a `-dev`
 suffix for the upcoming version.
 
-## Unreleased — v0.2.3-dev
+## Unreleased — v0.2.4-dev
+
+_Nothing yet._
+
+## v0.2.3 — 2026-06-26
+
+### Added
+- **Group subheaders in the task list**: under a sort, tasks are grouped with a
+  right-aligned, non-selectable subheader showing the sort field's value (the
+  date for date added / due / deadline, `P1`–`P4` for priority, the project,
+  first letter for name, the labels). Shown only when there are ≥2 groups; the
+  manual order has none. Navigation skips the subheaders.
+- **Roadmap**: added [`ROADMAP.md`](ROADMAP.md) (Pomodoro, countdown timer,
+  recurring-task support, image attachments), linked from the README.
 
 ### Fixed
 - **Ideas list**: `i` now captures a new idea (it previously did nothing despite
-  the "press i to catch one" hint), and the keyboard legend (`i catch · b back ·
-  h home`) shows even when the list is empty.
+  the "press i to catch one" hint), capturing lands back on the ideas list, and
+  the keyboard legend (`i catch · b back · h home`) shows even when empty.
 - **Mind map**: `I` jumps back to the ideas list (its parent); while editing a
   node, `I` is still typed text.
 
