@@ -5,7 +5,11 @@ tagged. Versioning follows a Maven-style snapshot flow (see
 [`DEVELOPING.md`](DEVELOPING.md)): between releases `main.go` carries a `-dev`
 suffix for the upcoming version.
 
-## Unreleased — v0.2.2-dev
+## Unreleased — v0.2.3-dev
+
+_Nothing yet._
+
+## v0.2.2 — 2026-06-26
 
 ### Added
 - **Mind-map zoom overlay** (`z`): floats the selected node's full, untruncated
