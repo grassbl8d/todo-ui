@@ -5,7 +5,11 @@ tagged. Versioning follows a Maven-style snapshot flow (see
 [`DEVELOPING.md`](DEVELOPING.md)): between releases `main.go` carries a `-dev`
 suffix for the upcoming version.
 
-## Unreleased — v0.2.5-dev
+## Unreleased — v0.2.6-dev
+
+_Nothing yet._
+
+## v0.2.5 — 2026-06-29
 
 ### Changed (breaking — keybindings)
 - **Home is now `.`** (was `h`) on every screen — the task list, detail, ideas
@@ -46,6 +50,10 @@ suffix for the upcoming version.
   untruncated text in the normal (navigable) map — the same display as the
   overview, but you can still move around and edit. `d` again restores
   truncation.
+
+### Fixed
+- **Due-date / deadline sort**: tasks without a date now stay **last in both
+  directions** — they no longer jump to the top when the sort is reversed.
 
 ## v0.2.4 — 2026-06-29
 
