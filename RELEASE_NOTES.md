@@ -7,7 +7,61 @@ suffix for the upcoming version.
 
 ## Unreleased — v0.2.4-dev
 
-_Nothing yet._
+### Added
+- **Delete confirmation in the ideas list**: pressing `x` on an idea now opens a
+  proper centered **modal** (over the dimmed list) asking `y`/`n` before removing
+  it (and its mind map), instead of deleting instantly.
+- **Global `p` / `h` shortcuts**: `p` jumps to the projects list (view-by-project)
+  from anywhere — task detail, help, options, the ideas list, and the mind map;
+  `h` goes home to the task list from the help/options screens too. (In the mind
+  map `h` stays parent-navigation, so use `p` there or `b` to step back.)
+- **Mind-map node reordering**: `Shift+↑` / `Shift+↓` swap the selected node with
+  its previous / next sibling, and `Shift+←` promotes a node to become a sibling
+  of its parent (outdent).
+- **Fast node entry (standard outliner keys)**: while editing a node, **Enter**
+  accepts it and opens the next **sibling**, **Tab** accepts and opens a **child**
+  — chain a whole branch without leaving edit mode. `Esc` (or Enter on an empty
+  entry) finishes.
+- **Auto-clearing status line**: transient status messages (e.g. `synced`,
+  `pasted as child`) now disappear on their own. A new **"Status auto-clear"**
+  entry in the `,` menu sets the delay (3 / 5 / 10 / 30 seconds, or off; default
+  5s).
+- **Mind-map overview (`Z`)**: a true full-screen, all-branches-expanded,
+  read-only survey of the whole map — the app header/title are hidden and only
+  the footer shortcuts show. Node labels are shown in **full** (no truncation),
+  and `/` search with `n`/`N` works inside it. Navigate to pan, `Z`/`esc` to
+  close.
+- **Mind-map search (`/`)**: find nodes by text; `n` / `N` cycle to the next /
+  previous match (wrapping), with a match counter in the status line.
+- **Mind-map undo (`u`)**: undoes the last change to the map — paste, cut,
+  delete, reorder, promote, colour, rename, etc. — one step at a time (history is
+  per-map session).
+- **Instant node delete (`Backspace` / `Delete`)**: deleting a node no longer
+  asks for confirmation — it removes the node immediately and the status line
+  reminds you `u` undoes it. The old `d` binding is freed for future use.
+- **Mind-map cut / copy / paste**: `x` cuts the selected node + subtree to a
+  clipboard, `c` copies it, `v` pastes as a child and `V` pastes as a sibling
+  (deep copy; pasted copies are unlinked from Todoist). To make room, the keys
+  they displaced moved: complete/reopen a task node is now **`X`**, outline
+  colour is **`o`/`O`**, and background fill is **`f`/`F`**.
+- **Configurable mind-map selection underline**: the line under the selected
+  node is now a bright colour (default **yellow**), and a new **"Mind-map
+  underline"** entry in the `,` menu cycles through colours and remembers the
+  choice.
+
+### Fixed
+- **Duplicate projects after the mind-map `T` / bind flow**: a project
+  auto-created via `T` was left in the local cache under its temporary id even
+  after the real one synced, so it showed up twice in the project list. Temp
+  projects/labels are now cleared on sync (matching items/notes), and orphaned
+  `tmp-` entries are swept on launch and after every sync.
+- **Collapsed-children indicator on long labels**: the `(+N)` count (shown even
+  for a single child) is now a separate, cyan badge drawn after the label, so a
+  long node name can no longer truncate it away; it also no longer blends into
+  the node text.
+- **Mind map `T` with no marked tasks**: now shows a visible alert ("no tasks
+  yet — press t on a node to mark it as a task first") instead of silently doing
+  nothing. The mind map also surfaces transient status messages generally.
 
 ## v0.2.3 — 2026-06-26
 

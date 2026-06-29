@@ -211,6 +211,55 @@ func TestDefaultSortMenuCycles(t *testing.T) {
 	}
 }
 
+func TestMindUnderlineMenuCycles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate the settings.Save() this test triggers
+	m := newTestModel()
+	m.settings.MindUnderline = "yellow"
+	mindUnderlineColor = mindUnderlineColorByName("yellow")
+	// Open the menu and move onto the "Mind-map underline" row (index 7).
+	m.mode = modeOptions
+	m.optCursor = 7
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	want := nextMindUnderline("yellow")
+	if m.settings.MindUnderline != want {
+		t.Fatalf("cycling from yellow should give %q, got %q", want, m.settings.MindUnderline)
+	}
+	if mindUnderlineColor != mindUnderlineColorByName(want) {
+		t.Fatalf("active underline colour should follow the menu")
+	}
+}
+
+func TestStatusTimeoutMenuCycles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel()
+	m.settings.StatusSeconds = 5
+	// Open the menu and move onto the "Status auto-clear" row (index 8).
+	m.mode = modeOptions
+	m.optCursor = 8
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(model)
+	if m.settings.StatusSeconds != 10 { // 5 → 10 in the cycle
+		t.Fatalf("cycling from 5 should give 10, got %d", m.settings.StatusSeconds)
+	}
+	// Cycle through to the "off" (-1) entry.
+	for i := 0; i < 2; i++ { // 10 → 30 → -1
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		m = nm.(model)
+	}
+	if m.settings.StatusSeconds != -1 {
+		t.Fatalf("expected the off sentinel (-1), got %d", m.settings.StatusSeconds)
+	}
+	if statusSecondsLabel(m.settings.StatusSeconds) != "off" {
+		t.Fatalf("off should render as 'off', got %q", statusSecondsLabel(m.settings.StatusSeconds))
+	}
+	// When off, no auto-clear timer is scheduled.
+	m.status = "synced"
+	if cmd := m.flashStatusCmd(); cmd != nil {
+		t.Fatal("flashStatusCmd should be nil when auto-clear is off")
+	}
+}
+
 func TestParseDefaultSortRoundTrip(t *testing.T) {
 	cases := []struct {
 		tok  string
@@ -862,11 +911,34 @@ func TestIdeaCatcherFlow(t *testing.T) {
 	if m.mode != modeIdeaList || !strings.Contains(m.View(), "Ideas (1)") {
 		t.Fatal("after capture should land on the ideas list")
 	}
-	// x deletes
+	// x asks for confirmation first (does not delete yet).
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	m = nm.(model)
+	if m.mode != modeIdeaConfirmDelete {
+		t.Fatal("x should open the delete confirmation")
+	}
+	if len(m.ideas) != 1 {
+		t.Fatal("x should not delete before confirmation")
+	}
+	if !strings.Contains(m.View(), "Delete idea?") {
+		t.Fatal("confirmation modal should render")
+	}
+	// n cancels — the idea survives.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = nm.(model)
+	if m.mode != modeIdeaList || len(m.ideas) != 1 {
+		t.Fatal("n should cancel and keep the idea")
+	}
+	// x then y confirms the delete.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = nm.(model)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = nm.(model)
 	if len(m.ideas) != 0 {
-		t.Fatal("x should delete the selected idea")
+		t.Fatal("y should delete the selected idea")
+	}
+	if m.mode != modeIdeaList {
+		t.Fatal("after delete should return to the ideas list")
 	}
 }
 

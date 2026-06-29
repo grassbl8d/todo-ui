@@ -97,6 +97,39 @@ func (i Idea) countNodes() int {
 	return walk(i.Children)
 }
 
+// snapshotIdeas serialises the ideas slice for the mind-map undo stack. An empty
+// string means it couldn't be captured (treated as "no snapshot").
+func snapshotIdeas(ideas []Idea) string {
+	b, err := json.Marshal(ideas)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// restoreIdeas rebuilds an ideas slice from a snapshot taken by snapshotIdeas.
+func restoreIdeas(snap string) ([]Idea, bool) {
+	var ideas []Idea
+	if json.Unmarshal([]byte(snap), &ideas) != nil {
+		return nil, false
+	}
+	return ideas, true
+}
+
+// cloneMindNode returns a deep copy of n and its whole subtree, so a cut/copied
+// node can be pasted repeatedly without sharing state with the original.
+func cloneMindNode(n *MindNode) *MindNode {
+	if n == nil {
+		return nil
+	}
+	c := *n // copy scalar fields (Text, flags, colours, TaskID)
+	c.Children = make([]*MindNode, len(n.Children))
+	for i, k := range n.Children {
+		c.Children[i] = cloneMindNode(k)
+	}
+	return &c
+}
+
 // insertMindNode returns children with n inserted at idx (clamped).
 func insertMindNode(children []*MindNode, idx int, n *MindNode) []*MindNode {
 	if idx < 0 {

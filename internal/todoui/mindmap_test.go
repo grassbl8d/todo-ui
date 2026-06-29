@@ -202,34 +202,545 @@ func TestMindMapTabAddsChildEnterAddsSibling(t *testing.T) {
 	m := mindModel(t)
 	m = keyType(m, tea.KeyEnter) // into the map (cursor on root)
 
-	// Tab adds a child to the root, then we type its text and commit.
+	// Tab (in the map) starts editing a new child of the root.
 	m = keyType(m, tea.KeyTab)
 	if m.mode != modeMindEdit {
 		t.Fatal("tab should start editing the new child node")
 	}
 	m = typeText(m, "Location")
-	m = keyType(m, tea.KeyEnter)
 
-	if got := m.ideas[0].Children; len(got) != 1 || got[0].Text != "Location" {
-		t.Fatalf("tab should add one child 'Location', got %+v", got)
+	// Enter commits "Location" and chains into a new sibling (still editing).
+	m = keyType(m, tea.KeyEnter)
+	if m.mode != modeMindEdit {
+		t.Fatalf("enter should chain into a new sibling editor, mode=%d", m.mode)
 	}
-
-	// Enter adds a sibling of the selected node (now "Location").
-	m = keyType(m, tea.KeyEnter)
 	m = typeText(m, "Budget")
+
+	// Tab commits "Budget" and chains into a child of Budget.
+	m = keyType(m, tea.KeyTab)
+	if m.mode != modeMindEdit {
+		t.Fatalf("tab should chain into a child editor, mode=%d", m.mode)
+	}
+	m = typeText(m, "Under 500k")
+
+	// Enter commits the grandchild + opens an empty sibling; Esc drops it.
 	m = keyType(m, tea.KeyEnter)
+	m = keyType(m, tea.KeyEsc)
 
 	kids := m.ideas[0].Children
 	if len(kids) != 2 || kids[0].Text != "Location" || kids[1].Text != "Budget" {
-		t.Fatalf("enter should add a sibling 'Budget' after 'Location', got %+v", kids)
+		t.Fatalf("expected root children [Location Budget], got %+v", kids)
+	}
+	if gk := kids[1].Children; len(gk) != 1 || gk[0].Text != "Under 500k" {
+		t.Fatalf("tab should nest 'Under 500k' under Budget, got %+v", gk)
+	}
+}
+
+func TestMindMapShiftReorderSiblings(t *testing.T) {
+	m := mindModel(t)
+	m.ideas[0].Children = []*MindNode{{Text: "A"}, {Text: "B"}, {Text: "C"}}
+	m = keyType(m, tea.KeyEnter) // open map
+
+	// Move the cursor onto C (the last sibling).
+	m = key(m, 'l') // descend to A
+	for m.mindRows()[m.mindCursor].node.Text != "C" {
+		m = key(m, 'j')
+	}
+	kids := m.ideas[0].Children
+	if len(kids) != 3 || kids[0].Text != "A" || kids[2].Text != "C" {
+		t.Fatalf("setup expected [A B C], got %+v", kids)
 	}
 
-	// Tab on "Budget" nests a child under it.
-	m = keyType(m, tea.KeyTab)
-	m = typeText(m, "Under 500k")
+	// Shift+Up swaps C with B → [A C B].
+	m = keyType(m, tea.KeyShiftUp)
+	kids = m.ideas[0].Children
+	if kids[1].Text != "C" || kids[2].Text != "B" {
+		t.Fatalf("shift+up should swap C above B, got %+v", kids)
+	}
+	// Cursor should follow the moved node (still C).
+	if rows := m.mindRows(); rows[m.mindCursor].node.Text != "C" {
+		t.Fatalf("cursor should follow the moved node C, on %q", rows[m.mindCursor].node.Text)
+	}
+
+	// Shift+Down puts C back below B → [A B C].
+	m = keyType(m, tea.KeyShiftDown)
+	kids = m.ideas[0].Children
+	if kids[1].Text != "B" || kids[2].Text != "C" {
+		t.Fatalf("shift+down should swap C below B, got %+v", kids)
+	}
+}
+
+func TestMindMapShiftLeftPromotes(t *testing.T) {
+	m := mindModel(t)
+	// Root → A → G (grandchild under A).
+	m.ideas[0].Children = []*MindNode{{Text: "A", Children: []*MindNode{{Text: "G"}}}}
+	m = keyType(m, tea.KeyEnter) // open map
+
+	// Move the cursor onto G (two columns in).
+	m = key(m, 'l') // A
+	m = key(m, 'l') // G
+	if m.mindRows()[m.mindCursor].node.Text != "G" {
+		t.Fatalf("expected cursor on G, got %q", m.mindRows()[m.mindCursor].node.Text)
+	}
+
+	// Shift+Left promotes G to be a sibling of A (top level).
+	m = keyType(m, tea.KeyShiftLeft)
+	kids := m.ideas[0].Children
+	if len(kids) != 2 || kids[0].Text != "A" || kids[1].Text != "G" {
+		t.Fatalf("shift+left should promote G next to A, got %+v", kids)
+	}
+	if len(kids[0].Children) != 0 {
+		t.Fatalf("G should no longer be a child of A, got %+v", kids[0].Children)
+	}
+
+	// Promoting again: G is now top-level, so it can't go higher.
+	m = keyType(m, tea.KeyShiftLeft)
+	if !strings.Contains(m.status, "top level") {
+		t.Fatalf("promoting a top-level node should report it can't go further, got %q", m.status)
+	}
+}
+
+func TestGlobalProjectsHotkey(t *testing.T) {
+	// p jumps to the projects list (view-by-project) from the mind map.
+	m := mindModel(t)
+	m = keyType(m, tea.KeyEnter) // into the map
+	m = key(m, 'p')
+	if m.mode != modeProjectPick || m.pickIntent != pickView {
+		t.Fatalf("p in the mind map should open the projects list (view), got mode=%v intent=%v", m.mode, m.pickIntent)
+	}
+}
+
+func TestGlobalProjectsAndHomeFromMenus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel()
+	m.width, m.height = 100, 40
+	m.list.SetSize(100, 36)
+
+	// p from the help screen → projects picker.
+	m.mode = modeHelp
+	m = key(m, 'p')
+	if m.mode != modeProjectPick || m.pickIntent != pickView {
+		t.Fatalf("p should open projects from help, got mode=%v", m.mode)
+	}
+
+	// h from the options screen → home (task list).
+	m.mode = modeOptions
+	m = key(m, 'h')
+	if m.mode != modeList {
+		t.Fatalf("h should go home from options, got %v", m.mode)
+	}
+}
+
+func TestMindMapHStaysParentNav(t *testing.T) {
+	// In the mind map, h must remain parent navigation, NOT the global home jump.
+	m := mindModel(t)
+	m.ideas[0].Children = []*MindNode{{Text: "child"}}
+	m = keyType(m, tea.KeyEnter) // open map
+	m = key(m, 'l')              // descend to the child
+	m = key(m, 'h')              // back to the parent — should stay in the map
+	if m.mode != modeMindMap {
+		t.Fatalf("h in the mind map should stay in the map (parent nav), got %v", m.mode)
+	}
+}
+
+func TestMindMapSearchAndCycle(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{
+		{Text: "deploy alpha"}, {Text: "buy milk"}, {Text: "deploy beta"},
+	}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter) // open map (cursor on root)
+
+	// / opens search; typing + enter jumps to the first match.
+	m = key(m, '/')
+	if m.mode != modeMindSearch {
+		t.Fatalf("/ should open search, got mode=%d", m.mode)
+	}
+	m = typeText(m, "deploy")
 	m = keyType(m, tea.KeyEnter)
-	if gk := m.ideas[0].Children[1].Children; len(gk) != 1 || gk[0].Text != "Under 500k" {
-		t.Fatalf("tab should nest a grandchild under Budget, got %+v", gk)
+	if got := m.mindRows()[m.mindCursor].node.Text; got != "deploy alpha" {
+		t.Fatalf("first match should be 'deploy alpha', got %q", got)
+	}
+
+	// n cycles to the next match, N back.
+	m = key(m, 'n')
+	if got := m.mindRows()[m.mindCursor].node.Text; got != "deploy beta" {
+		t.Fatalf("n should jump to 'deploy beta', got %q", got)
+	}
+	m = key(m, 'n') // wraps back to the first
+	if got := m.mindRows()[m.mindCursor].node.Text; got != "deploy alpha" {
+		t.Fatalf("n should wrap to 'deploy alpha', got %q", got)
+	}
+	m = key(m, 'N') // previous wraps to the last
+	if got := m.mindRows()[m.mindCursor].node.Text; got != "deploy beta" {
+		t.Fatalf("N should wrap to 'deploy beta', got %q", got)
+	}
+
+	// esc in search clears the query without moving.
+	m = key(m, '/')
+	m = keyType(m, tea.KeyEsc)
+	if m.mode != modeMindMap || m.mindSearch != "" {
+		t.Fatalf("esc should cancel search and clear the query, mode=%d q=%q", m.mode, m.mindSearch)
+	}
+}
+
+func TestMindMapCutCopyPaste(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{
+		{Text: "A", Children: []*MindNode{{Text: "A-child"}}},
+		{Text: "B"},
+	}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter) // open map
+	m = key(m, 'l')              // descend to A
+
+	// Copy A (with its subtree), then paste as a child of A.
+	m = key(m, 'c')
+	if m.mindClip == nil || m.mindClip.Text != "A" {
+		t.Fatalf("c should copy A to the clipboard, got %+v", m.mindClip)
+	}
+	m = key(m, 'v') // paste as child of A
+	if got := m.ideas[0].Children[0].Children; len(got) != 2 || got[1].Text != "A" {
+		t.Fatalf("v should paste a copy of A under A, got %+v", got)
+	}
+	// The pasted copy is deep — it brought A-child along.
+	if pasted := m.ideas[0].Children[0].Children[1]; len(pasted.Children) != 1 || pasted.Children[0].Text != "A-child" {
+		t.Fatalf("paste should deep-copy the subtree, got %+v", pasted)
+	}
+
+	// Cut B, then paste it as a sibling of A.
+	m = key(m, 'r') // back to root
+	m = key(m, 'l') // A
+	// move down to B (last top-level child)
+	for m.mindRows()[m.mindCursor].node == nil || m.mindRows()[m.mindCursor].node.Text != "B" {
+		m = key(m, 'j')
+	}
+	m = key(m, 'x') // cut B
+	if m.mindClip == nil || m.mindClip.Text != "B" {
+		t.Fatalf("x should cut B to the clipboard, got %+v", m.mindClip)
+	}
+	found := false
+	for _, c := range m.ideas[0].Children {
+		if c.Text == "B" {
+			found = true
+		}
+	}
+	if found {
+		t.Fatal("cut should remove B from the tree")
+	}
+	// Paste B as a sibling (V) somewhere — it should reappear in the tree.
+	m = key(m, 'V')
+	count := 0
+	var walk func(ns []*MindNode)
+	walk = func(ns []*MindNode) {
+		for _, n := range ns {
+			if n.Text == "B" {
+				count++
+			}
+			walk(n.Children)
+		}
+	}
+	walk(m.ideas[0].Children)
+	if count != 1 {
+		t.Fatalf("paste should re-add B exactly once, got %d", count)
+	}
+}
+
+func TestMindMapStatusAutoClears(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{{Text: "A"}}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter)
+	m = key(m, 'l') // select A
+	m = key(m, 'c') // copy → sets a transient status
+	m = key(m, 'v') // paste as child → "pasted as child"
+	if m.status == "" {
+		t.Fatal("paste should set a transient status")
+	}
+	seq := m.statusSeq
+
+	// The matching auto-clear timer wipes it.
+	nm, _ := m.Update(clearStatusMsg{seq: seq})
+	m = nm.(model)
+	if m.status != "" {
+		t.Fatalf("clearStatusMsg with the current seq should clear the status, got %q", m.status)
+	}
+
+	// A stale timer (older seq) must NOT wipe a newer status.
+	m = key(m, 'c') // new status, bumps the seq past `seq`
+	newStatus := m.status
+	nm, _ = m.Update(clearStatusMsg{seq: seq})
+	m = nm.(model)
+	if m.status != newStatus {
+		t.Fatalf("a stale clear should leave a newer status, got %q want %q", m.status, newStatus)
+	}
+}
+
+// TestMindMapBufferStickyStatus verifies the cut/copy "buffer is full" reminder
+// stays up (no auto-clear timer) while the clipboard holds something, whereas the
+// paste confirmation schedules its own auto-clear.
+func TestMindMapBufferStickyStatus(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{{Text: "A"}}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter)
+	m = key(m, 'l') // select A
+
+	// Copy: the buffer reminder must be sticky — no auto-clear command scheduled.
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	m = res.(model)
+	if m.status == "" {
+		t.Fatal("copy should set the buffer reminder status")
+	}
+	if cmd != nil {
+		t.Fatal("the buffer reminder should be sticky — no auto-clear command expected")
+	}
+	bufStatus := m.status
+
+	// A stale timer (older seq) must not wipe the sticky reminder, and it has no
+	// timer of its own, so it persists.
+	nm, _ := m.Update(clearStatusMsg{seq: m.statusSeq - 1})
+	m = nm.(model)
+	if m.status != bufStatus {
+		t.Fatalf("sticky buffer reminder should persist, got %q", m.status)
+	}
+
+	// Paste: a one-shot confirmation that DOES schedule its own auto-clear.
+	res, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	m = res.(model)
+	if m.status != "📋 pasted as child" {
+		t.Fatalf("paste status = %q, want %q", m.status, "📋 pasted as child")
+	}
+	if cmd == nil {
+		t.Fatal("paste confirmation should schedule an auto-clear command")
+	}
+	// The matching timer wipes the confirmation.
+	nm, _ = m.Update(clearStatusMsg{seq: m.statusSeq})
+	m = nm.(model)
+	if m.status != "" {
+		t.Fatalf("paste confirmation should auto-clear, got %q", m.status)
+	}
+}
+
+func TestMindMapEscClearsSearch(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{{Text: "Flow"}, {Text: "x"}}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter)
+	m = key(m, '/')
+	m = typeText(m, "Flo")
+	m = keyType(m, tea.KeyEnter)
+	if m.mindSearch != "Flo" || m.status == "" {
+		t.Fatalf("search should be active, q=%q status=%q", m.mindSearch, m.status)
+	}
+
+	// First esc clears the active search (query + status) and stays in the map.
+	m = keyType(m, tea.KeyEsc)
+	if m.mode != modeMindMap {
+		t.Fatalf("esc with an active search should stay in the map, mode=%d", m.mode)
+	}
+	if m.mindSearch != "" || m.status != "" {
+		t.Fatalf("esc should clear the search and its status, q=%q status=%q", m.mindSearch, m.status)
+	}
+
+	// A second esc leaves to the ideas list…
+	m = keyType(m, tea.KeyEsc)
+	if m.mode != modeIdeaList {
+		t.Fatalf("second esc should leave to the ideas list, mode=%d", m.mode)
+	}
+	// …and re-entering the map carries no stale search status.
+	m = keyType(m, tea.KeyEnter)
+	if m.status != "" || m.mindSearch != "" {
+		t.Fatalf("re-entering the map should be clean, q=%q status=%q", m.mindSearch, m.status)
+	}
+}
+
+func TestIdeaListProjectsHotkey(t *testing.T) {
+	m := mindModel(t) // starts in modeIdeaList
+	m = key(m, 'p')
+	if m.mode != modeProjectPick || m.pickIntent != pickView {
+		t.Fatalf("p in the ideas list should open the projects list, got mode=%d", m.mode)
+	}
+}
+
+func TestMindMapCollapsedBadgeSurvivesLongLabel(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{
+		{Text: "Show the current Kube Context and the routes", Collapsed: true,
+			Children: []*MindNode{{Text: "the only child"}}},
+	}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter)
+	m = key(m, 'l') // select the long collapsed node
+
+	v := m.View()
+	// The long label is truncated, but the single-child indicator must still show.
+	if !strings.Contains(v, "…") {
+		t.Fatal("expected the long label to be truncated")
+	}
+	if !strings.Contains(v, "(+1)") {
+		t.Fatalf("the (+1) badge must survive truncation, got:\n%s", v)
+	}
+}
+
+func TestMindMapOverviewFullTextAndSearch(t *testing.T) {
+	m := mindModel(t)
+	long := "Show the current Kube Context and the available projects too"
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{{Text: long}}}}
+	m.ideaCursor = 0
+	m.width, m.height = 120, 20
+	m = keyType(m, tea.KeyEnter)
+
+	// Normal view truncates the long label.
+	if strings.Contains(m.View(), long) {
+		t.Fatal("normal view should truncate the long label")
+	}
+
+	// Overview shows the full, untruncated text and hides the app header.
+	m = key(m, 'Z')
+	v := m.View()
+	if !strings.Contains(v, long) {
+		t.Fatalf("overview should show the full node text, got:\n%s", v)
+	}
+	if strings.Contains(v, "✓ Todoist") {
+		t.Fatal("overview should be full screen (no app header)")
+	}
+
+	// Search works inside overview and keeps the overview on afterwards.
+	m = key(m, '/')
+	if m.mode != modeMindSearch {
+		t.Fatalf("/ should open search in overview, mode=%d", m.mode)
+	}
+	m = typeText(m, "Kube")
+	m = keyType(m, tea.KeyEnter)
+	if !m.mindOverview {
+		t.Fatal("search should keep the overview open")
+	}
+	if got := m.mindRows()[m.mindCursor].node.Text; got != long {
+		t.Fatalf("search should jump to the matching node, got %q", got)
+	}
+}
+
+func TestMindMapOverviewExpandsAndIsReadOnly(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{
+		{Text: "Branch A", Collapsed: true, Children: []*MindNode{{Text: "Hidden G"}}},
+		{Text: "Branch B"},
+	}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter) // open map
+
+	// Normal view: the collapsed branch hides its child.
+	if strings.Contains(m.View(), "Hidden G") {
+		t.Fatal("collapsed child should be hidden in the normal view")
+	}
+
+	// Z opens the read-only, all-expanded overview.
+	m = key(m, 'Z')
+	if !m.mindOverview {
+		t.Fatal("Z should enable the overview")
+	}
+	v := m.View()
+	if !strings.Contains(v, "Hidden G") {
+		t.Fatalf("overview should expand collapsed branches, got:\n%s", v)
+	}
+	// Full-screen: the app header and title chrome are dropped; only a slim mode
+	// indicator at the top and the footer shortcuts remain.
+	if strings.Contains(v, "✓ Todoist") {
+		t.Fatal("overview should hide the app header (full screen)")
+	}
+	if !strings.Contains(v, "OVERVIEW MODE") {
+		t.Fatal("overview should show the OVERVIEW MODE indicator")
+	}
+	if !strings.Contains(v, "Z/esc close") {
+		t.Fatal("overview should still show the footer shortcuts")
+	}
+
+	// Read-only: editing/structural keys are ignored (d must not delete).
+	before := len(m.ideas[0].Children)
+	m = key(m, 'd')
+	if m.mode != modeMindMap || m.mindOverview != true {
+		t.Fatal("d in overview should be ignored (no delete-confirm, stay in overview)")
+	}
+	if len(m.ideas[0].Children) != before {
+		t.Fatal("d in overview must not change the tree")
+	}
+
+	// Z again closes the overview.
+	m = key(m, 'Z')
+	if m.mindOverview {
+		t.Fatal("Z again should close the overview")
+	}
+}
+
+func TestMindMapEnterChainsSiblings(t *testing.T) {
+	m := mindModel(t)
+	m = keyType(m, tea.KeyEnter) // open map (cursor on root)
+	m = keyType(m, tea.KeyTab)   // new child, editing
+	m = typeText(m, "first")
+
+	// Enter commits "first" and opens an empty sibling editor (no Enter+Enter).
+	m = keyType(m, tea.KeyEnter)
+	if m.mode != modeMindEdit {
+		t.Fatalf("enter should chain into a new sibling editor, mode=%d", m.mode)
+	}
+	if kids := m.ideas[0].Children; len(kids) != 2 || kids[0].Text != "first" || kids[1].Text != "" {
+		t.Fatalf("enter should commit 'first' and add an empty sibling, got %+v", kids)
+	}
+	m = typeText(m, "second")
+
+	// Enter on the empty trailing node would chain again; instead Esc finishes.
+	m = keyType(m, tea.KeyEnter)
+	m = keyType(m, tea.KeyEsc)
+
+	kids := m.ideas[0].Children
+	if len(kids) != 2 || kids[0].Text != "first" || kids[1].Text != "second" {
+		t.Fatalf("enter-chaining should yield siblings [first second], got %+v", kids)
+	}
+}
+
+func TestMindMapUndo(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Children: []*MindNode{{Text: "A"}, {Text: "B"}}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter) // open map
+	m = key(m, 'l')              // select A
+
+	// Copy A and paste it as a child → 3 nodes under A's parent path.
+	m = key(m, 'c')
+	m = key(m, 'v') // paste as child of A
+	if len(m.ideas[0].Children[0].Children) != 1 {
+		t.Fatalf("paste should add a child under A, got %+v", m.ideas[0].Children[0].Children)
+	}
+
+	// u undoes the paste.
+	m = key(m, 'u')
+	if len(m.ideas[0].Children[0].Children) != 0 {
+		t.Fatalf("undo should remove the pasted child, got %+v", m.ideas[0].Children[0].Children)
+	}
+	if !strings.Contains(m.status, "undone") {
+		t.Fatalf("undo should report 'undone', got %q", m.status)
+	}
+
+	// Delete B (immediate, no confirm), then undo restores it.
+	for m.mindRows()[m.mindCursor].node == nil || m.mindRows()[m.mindCursor].node.Text != "B" {
+		m = key(m, 'j')
+	}
+	m = keyType(m, tea.KeyBackspace)
+	if len(m.ideas[0].Children) != 1 {
+		t.Fatalf("delete should leave 1 child, got %+v", m.ideas[0].Children)
+	}
+	m = key(m, 'u')
+	if len(m.ideas[0].Children) != 2 || m.ideas[0].Children[1].Text != "B" {
+		t.Fatalf("undo should restore deleted B, got %+v", m.ideas[0].Children)
+	}
+
+	// Undo with an empty stack reports nothing to undo.
+	for i := 0; i < 5; i++ {
+		m = key(m, 'u')
+	}
+	if !strings.Contains(m.status, "nothing to undo") {
+		t.Fatalf("exhausting the undo stack should say so, got %q", m.status)
 	}
 }
 
@@ -246,12 +757,28 @@ func TestMindMapEscDiscardsEmptyNewNode(t *testing.T) {
 	}
 }
 
-func TestMindMapMarkAsTask(t *testing.T) {
+func TestMindMapEscSavesTypedTextWithoutSibling(t *testing.T) {
 	m := mindModel(t)
 	m = keyType(m, tea.KeyEnter)
-	m = keyType(m, tea.KeyTab)
-	m = typeText(m, "Call agent")
-	m = keyType(m, tea.KeyEnter) // commits; cursor lands on the new node
+	m = keyType(m, tea.KeyTab) // new child, editing
+	m = typeText(m, "keep me")
+
+	// Esc with text typed saves it and returns to the map — no extra sibling.
+	m = keyType(m, tea.KeyEsc)
+	if m.mode != modeMindMap {
+		t.Fatalf("esc should return to map navigation, mode=%d", m.mode)
+	}
+	kids := m.ideas[0].Children
+	if len(kids) != 1 || kids[0].Text != "keep me" {
+		t.Fatalf("esc should save the typed node and add no sibling, got %+v", kids)
+	}
+}
+
+func TestMindMapMarkAsTask(t *testing.T) {
+	m := mindModel(t)
+	m.ideas[0].Children = []*MindNode{{Text: "Call agent"}}
+	m = keyType(m, tea.KeyEnter) // open map
+	m = key(m, 'l')              // select the child
 
 	m = key(m, 't') // mark as task
 	if !m.ideas[0].Children[0].IsTask {
@@ -267,29 +794,49 @@ func TestMindMapMarkAsTask(t *testing.T) {
 	}
 }
 
-func TestMindMapDeleteAndEsc(t *testing.T) {
+func TestMindMapTWithNoTaskAlerts(t *testing.T) {
 	m := mindModel(t)
-	m = keyType(m, tea.KeyEnter)
-	m = keyType(m, tea.KeyTab)
-	m = typeText(m, "Temp")
-	m = keyType(m, tea.KeyEnter)
+	m.ideas[0].Children = []*MindNode{{Text: "An idea"}} // a plain node, not a task
+	m = keyType(m, tea.KeyEnter)                         // open map
 
-	m = key(m, 'x') // x on a non-task node does nothing
-	if len(m.ideas[0].Children) != 1 {
-		t.Fatalf("x must NOT delete a non-task node, got %+v", m.ideas[0].Children)
+	m = key(m, 'T') // commit tasks — but nothing is marked
+	if m.mode != modeMindMap {
+		t.Fatal("T with no tasks should stay in the mind map, not open the project picker")
 	}
-	m = key(m, 'd') // d asks for confirmation
-	if m.mode != modeMindConfirmDelete {
-		t.Fatalf("d should open the delete confirmation, mode=%d", m.mode)
+	if !strings.Contains(m.status, "no tasks yet") {
+		t.Fatalf("T should alert that no tasks are marked, got status %q", m.status)
 	}
-	m = key(m, 'n') // cancel — node stays
-	if len(m.ideas[0].Children) != 1 || m.mode != modeMindMap {
-		t.Fatalf("n should cancel the delete, got %+v mode=%d", m.ideas[0].Children, m.mode)
+	if v := m.View(); !strings.Contains(v, "no tasks yet") {
+		t.Fatalf("the alert should be visible in the mind-map view, got:\n%s", v)
 	}
-	m = key(m, 'd') // confirm this time
-	m = key(m, 'y')
+}
+
+func TestMindMapDeleteImmediateAndUndo(t *testing.T) {
+	m := mindModel(t)
+	m.ideas[0].Children = []*MindNode{{Text: "Temp"}}
+	m = keyType(m, tea.KeyEnter) // open map
+	m = key(m, 'l')              // select Temp
+
+	// Backspace deletes immediately (no confirmation) and offers undo.
+	m = keyType(m, tea.KeyBackspace)
 	if len(m.ideas[0].Children) != 0 {
-		t.Fatalf("y should confirm the delete, got %+v", m.ideas[0].Children)
+		t.Fatalf("backspace should delete the node, got %+v", m.ideas[0].Children)
+	}
+	if m.mode != modeMindMap || !strings.Contains(m.status, "undo") {
+		t.Fatalf("delete should stay in the map and mention undo, mode=%d status=%q", m.mode, m.status)
+	}
+
+	// u restores it.
+	m = key(m, 'u')
+	if len(m.ideas[0].Children) != 1 || m.ideas[0].Children[0].Text != "Temp" {
+		t.Fatalf("undo should restore the deleted node, got %+v", m.ideas[0].Children)
+	}
+
+	// Delete (forward-delete key) also works.
+	m = key(m, 'l')
+	m = keyType(m, tea.KeyDelete)
+	if len(m.ideas[0].Children) != 0 {
+		t.Fatalf("delete key should also remove the node, got %+v", m.ideas[0].Children)
 	}
 
 	m = keyType(m, tea.KeyEsc) // leave the map
@@ -366,23 +913,23 @@ func TestMindMapColorCycle(t *testing.T) {
 	m = keyType(m, tea.KeyEnter)
 	m = keyType(m, tea.KeyRight) // onto A
 
-	m = key(m, 'c') // outline colour, this node only
+	m = key(m, 'o') // outline colour, this node only
 	if m.ideas[0].Children[0].Color != 1 {
-		t.Fatalf("c should set outline colour index 1, got %d", m.ideas[0].Children[0].Color)
+		t.Fatalf("o should set outline colour index 1, got %d", m.ideas[0].Children[0].Color)
 	}
 	if m.ideas[0].Children[0].Children[0].Color != 0 {
-		t.Fatal("c must not touch the child's colour")
+		t.Fatal("o must not touch the child's colour")
 	}
-	m = key(m, 'C') // outline colour for node + descendants
+	m = key(m, 'O') // outline colour for node + descendants
 	if got := m.ideas[0].Children[0].Color; got != 2 {
-		t.Fatalf("C should advance the node's colour to 2, got %d", got)
+		t.Fatalf("O should advance the node's colour to 2, got %d", got)
 	}
 	if got := m.ideas[0].Children[0].Children[0].Color; got != 2 {
-		t.Fatalf("C should propagate colour 2 to the child, got %d", got)
+		t.Fatalf("O should propagate colour 2 to the child, got %d", got)
 	}
-	m = key(m, 'v') // background, this node only
+	m = key(m, 'f') // background fill, this node only
 	if m.ideas[0].Children[0].BG != 1 {
-		t.Fatalf("v should set background index 1, got %d", m.ideas[0].Children[0].BG)
+		t.Fatalf("f should set background index 1, got %d", m.ideas[0].Children[0].BG)
 	}
 }
 
@@ -687,12 +1234,12 @@ func TestMindMapXCompletesTaskNode(t *testing.T) {
 	m.ideas = []Idea{{Text: "root", Children: []*MindNode{{Text: "do", IsTask: true, TaskID: "real-9"}}}}
 	m.mindIdea, m.mindCursor, m.mode = 0, 1, modeMindMap
 
-	m = key(m, 'x') // complete (not delete — it's a task)
+	m = key(m, 'X') // complete (X = done; x is cut now)
 	if !m.ideas[0].Children[0].Done {
-		t.Fatal("x on a task node should complete it")
+		t.Fatal("X on a task node should complete it")
 	}
 	if len(m.ideas[0].Children) != 1 {
-		t.Fatal("x on a task node must NOT delete it")
+		t.Fatal("X on a task node must NOT delete it")
 	}
 	completes := 0
 	for _, c := range m.queue {
@@ -704,9 +1251,9 @@ func TestMindMapXCompletesTaskNode(t *testing.T) {
 		t.Fatalf("expected 1 item_complete queued, got %d", completes)
 	}
 
-	m = key(m, 'x') // reopen
+	m = key(m, 'X') // reopen
 	if m.ideas[0].Children[0].Done {
-		t.Fatal("x again should reopen the task")
+		t.Fatal("X again should reopen the task")
 	}
 }
 

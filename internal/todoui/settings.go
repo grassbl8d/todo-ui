@@ -16,10 +16,12 @@ type Settings struct {
 	DateFormat    string `json:"date_format"`    // MDY (default), YMD, or DMY
 	Timezone      string `json:"timezone"`       // IANA zone for "today" math (default Asia/Manila)
 	DefaultSort   string `json:"default_sort"`   // sort applied on launch, e.g. "added-desc" (empty = added-desc)
+	MindUnderline string `json:"mind_underline"` // mind-map selection underline colour name (empty = yellow)
+	StatusSeconds int    `json:"status_seconds"` // auto-clear a transient status after N seconds (0 = use default)
 }
 
 func defaultSettings() Settings {
-	return Settings{OngoingLabel: "ongoing", FollowupLabel: "ffup", UpNextLabel: "upnext", SyncSeconds: 30, DateFormat: "MDY", Timezone: "Asia/Manila", DefaultSort: "added-desc"}
+	return Settings{OngoingLabel: "ongoing", FollowupLabel: "ffup", UpNextLabel: "upnext", SyncSeconds: 30, DateFormat: "MDY", Timezone: "Asia/Manila", DefaultSort: "added-desc", MindUnderline: "yellow", StatusSeconds: 5}
 }
 
 func settingsPath() string {
@@ -70,6 +72,12 @@ func LoadSettings() Settings {
 	}
 	if s.DefaultSort == "" {
 		s.DefaultSort = "added-desc" // newest-added first, the app default
+	}
+	if s.MindUnderline == "" || mindUnderlineColorByName(s.MindUnderline) == "" {
+		s.MindUnderline = "yellow" // bright default for the selection underline
+	}
+	if s.StatusSeconds == 0 {
+		s.StatusSeconds = 5 // unset → default; -1 is the explicit "off" sentinel
 	}
 	return s
 }

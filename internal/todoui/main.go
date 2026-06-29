@@ -279,6 +279,7 @@ const (
 	modeIdeaAdd           // 💡 capture a new idea (overlay)
 	modeIdeaList          // 💡 browse captured ideas
 	modeIdeaRename        // 💡 rename the selected idea
+	modeIdeaConfirmDelete // 💡 y/n confirm before deleting an idea
 	modeDeadlinePick      // pick a deadline from quick options
 	modeDuePick           // pick a due date from quick options
 	modeTimezone          // searchable IANA timezone picker
@@ -288,7 +289,7 @@ const (
 	modeMindEdit          // 🗺 typing a mind-map node's text
 	modeMindHelp          // 🗺 dedicated keyboard help for mind-map mode
 	modeMindPalette       // 🗺 ` quick-action palette for mind-map mode
-	modeMindConfirmDelete // 🗺 y/n confirm before deleting a node
+	modeMindSearch        // 🗺 / search nodes by text (n/N cycle matches)
 	modeMindConfirmUnbind // 🗺 y/n confirm before unbinding the project
 )
 
@@ -493,8 +494,11 @@ type model struct {
 	mindCursor    int         // selected row in the flattened mind-map tree
 	mindEditNode  *MindNode   // node whose text is being edited (nil = the root idea)
 	mindEditNew   bool        // the edited node was just created (esc/empty discards it)
-	mindDelTarget *MindNode   // node pending delete-confirmation in the mind map
 	mindZoom      bool        // zoom (z): overlay the selected node's full text on the map
+	mindOverview  bool        // overview (Z): full-screen, all-expanded, read-only map
+	mindSearch    string      // active /-search query in the mind map (n/N cycle matches)
+	mindClip      *MindNode   // cut/copy clipboard (a detached subtree) for x/c/v paste
+	mindUndo      []string    // mind-map undo stack: idea-tree snapshots before each change
 	dlCursor      int         // selected row in the deadline picker
 	dueCursor     int         // selected row in the due-date picker
 	homeFlash     bool        // brief highlight of the home/clear hint when pressed
@@ -502,6 +506,8 @@ type model struct {
 	addProject    Project     // project chosen for the task currently being added
 	recents       []Project   // recently-chosen projects, most recent first (persisted)
 	status        string
+	statusSeq     int           // bumped on each transient status, so auto-clear only wipes the latest
+	statusFlash   time.Duration // per-status auto-clear override (0 = use statusTTL); reset after each key
 	err           string
 	width         int
 	height        int
@@ -524,6 +530,30 @@ type tokenCheckedMsg struct {
 }
 type autoSyncTickMsg struct{ gen int }
 type homeFlashOffMsg struct{}
+
+// clearStatusMsg auto-dismisses a transient status line. seq guards against a
+// stale timer wiping a newer message: it only clears when seq still matches.
+type clearStatusMsg struct{ seq int }
+
+// statusSticky is a sentinel statusFlash value: a status set with it stays up
+// until another status replaces it, instead of auto-clearing on a timer. Used
+// for the cut/copy buffer reminder, which should persist while the clipboard
+// still holds something to paste.
+const statusSticky time.Duration = -1
+
+// mindUndoCap bounds the mind-map undo history so it can't grow without limit.
+const mindUndoCap = 50
+
+// isMindMode reports whether a mode is part of the mind-map editor, where idea
+// tree changes should be captured for undo.
+func isMindMode(mo mode) bool {
+	switch mo {
+	case modeMindMap, modeMindEdit, modeMindConfirmUnbind, modeMindPalette, modeMindSearch:
+		return true
+	}
+	return false
+}
+
 type onlineResultMsg struct {
 	query string
 	items []apiItem
@@ -566,10 +596,19 @@ func initialModel() model {
 		ideas:    LoadIdeas(),
 		status:   "ready",
 	}
+	// Clean up any orphaned optimistic tmp- entries left in the cache (e.g. a
+	// project auto-created via the mind map's T flow that synced before temp
+	// projects were pruned on merge — it would otherwise show as a duplicate).
+	if n := m.cache.PruneOrphanTemps(pendingTempIDs(m.queue)); n > 0 {
+		m.cache.Save()
+	}
 	// Default view sort comes from settings (defaults to date added descending).
 	m.sortMode, m.sortDesc = parseDefaultSort(m.settings.DefaultSort)
 	m.applyThemeFromSettings()
 	dateFmt = m.settings.DateFormat
+	if c := mindUnderlineColorByName(m.settings.MindUnderline); c != "" {
+		mindUnderlineColor = c
+	}
 	applyTimezone(m.settings.Timezone)
 	m.deriveAll()
 	if !HasToken() {
@@ -1493,6 +1532,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.queue = nil
 		}
 		SaveQueue(m.queue)
+		// Sweep any tmp- entries no longer backed by a queued command (belt-and-
+		// braces alongside Merge's temp_id_mapping cleanup).
+		m.cache.PruneOrphanTemps(pendingTempIDs(m.queue))
 		m.cache.Save()
 		m.deriveAll()
 		m.refreshDetail()
@@ -1500,98 +1542,186 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.comments = m.cache.CommentsFor(m.detailID)
 		}
 		m.status = "synced"
-		return m, nil
+		return m, m.flashStatusCmd() // auto-clear "synced" after the configured delay
 
 	case actionMsg:
 		m.status = msg.status
-		return m, nil
+		return m, m.flashStatusCmd()
 
 	case errMsg:
 		m.err = msg.err.Error()
 		return m, nil
 
+	case clearStatusMsg:
+		// Auto-dismiss a transient status, but only if nothing newer replaced it.
+		if msg.seq == m.statusSeq {
+			m.status = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
-		// 💡 I opens the ideas list from any read/navigation view (not while
-		// typing, searching, or already inside the ideas/mind-map area).
-		if msg.String() == "I" && ideasHotkeyMode(m.mode) {
-			m.ideas = LoadIdeas()
-			m.ideaCursor = 0
-			m.mode = modeIdeaList
-			return m, nil
+		prev := m.status
+		// Snapshot the idea tree before a mind-map edit so `u` can undo it. We
+		// compare before/after and only record real changes, so navigation and
+		// typing don't pollute the history. `u` itself is excluded.
+		snapBefore := ""
+		recordUndo := isMindMode(m.mode) && msg.String() != "u"
+		if recordUndo {
+			snapBefore = snapshotIdeas(m.ideas)
 		}
-		switch m.mode {
-		case modeList:
-			return m.updateList(msg)
-		case modeAdd, modeSearch:
-			return m.updateInput(msg)
-		case modeConfirm:
-			return m.updateConfirm(msg)
-		case modeProjectPick:
-			return m.updateProjectPick(msg)
-		case modeHelp:
-			return m.updateHelp(msg)
-		case modeDetail:
-			return m.updateDetail(msg)
-		case modeDetailEdit:
-			return m.updateDetailEdit(msg)
-		case modeCommentAdd:
-			return m.updateCommentAdd(msg)
-		case modePriorityPick:
-			return m.updatePriorityPick(msg)
-		case modeOnboard:
-			return m.updateOnboard(msg)
-		case modeOnboardLabel:
-			return m.updateOnboardLabel(msg)
-		case modeClearData:
-			return m.updateClearData(msg)
-		case modeOptions:
-			return m.updateOptions(msg)
-		case modeOptionsEdit:
-			return m.updateOptionsEdit(msg)
-		case modeOnlineSearch:
-			return m.updateOnlineSearch(msg)
-		case modeCommand:
-			return m.updateCommand(msg)
-		case modeProjectAdd:
-			return m.updateProjectAdd(msg)
-		case modeProjectDelete:
-			return m.updateProjectDelete(msg)
-		case modeIdeaAdd:
-			return m.updateIdeaAdd(msg)
-		case modeIdeaList:
-			return m.updateIdeaList(msg)
-		case modeIdeaRename:
-			return m.updateIdeaRename(msg)
-		case modeMindMap:
-			return m.updateMindMap(msg)
-		case modeMindEdit:
-			return m.updateMindEdit(msg)
-		case modeMindHelp:
-			// Any key closes the mind-map help and returns to the map.
-			m.mode = modeMindMap
-			return m, nil
-		case modeMindPalette:
-			return m.updateMindPalette(msg)
-		case modeMindConfirmDelete:
-			return m.updateMindConfirmDelete(msg)
-		case modeMindConfirmUnbind:
-			return m.updateMindConfirmUnbind(msg)
-		case modeDeadlinePick:
-			return m.updateDeadlinePick(msg)
-		case modeDuePick:
-			return m.updateDuePick(msg)
-		case modeTimezone:
-			return m.updateTimezone(msg)
-		case modePalette:
-			return m.updatePalette(msg)
-		case modeAbout:
-			// Any key closes the about screen.
-			m.mode = modeList
-			return m, nil
+		res, cmd := m.routeKey(msg)
+		nm, ok := res.(model)
+		if !ok {
+			return res, cmd
 		}
+		if recordUndo && snapBefore != "" && snapshotIdeas(nm.ideas) != snapBefore {
+			nm.mindUndo = append(nm.mindUndo, snapBefore)
+			if len(nm.mindUndo) > mindUndoCap {
+				nm.mindUndo = nm.mindUndo[len(nm.mindUndo)-mindUndoCap:]
+			}
+		}
+		// When a key produced a new transient status in the mind map, schedule it
+		// to auto-clear. Scoped to the map because that's where the status sits
+		// persistently in the footer; the task-list status bar is left untouched
+		// (and its handlers keep returning a nil cmd for local actions).
+		// A handler may set statusFlash to override how long its message lingers,
+		// or to statusSticky to keep it up until the next status replaces it (the
+		// cut/copy "buffer is full" reminder uses this so it isn't wiped while the
+		// clipboard still has something to paste).
+		// Default auto-clear delay comes from settings (StatusSeconds; <= 0 = off).
+		ttl := time.Duration(nm.settings.StatusSeconds) * time.Second
+		sticky := nm.statusFlash == statusSticky
+		if nm.statusFlash > 0 {
+			ttl = nm.statusFlash
+		}
+		nm.statusFlash = 0
+		if nm.status != "" && nm.status != prev && nm.mode == modeMindMap {
+			// Always bump statusSeq so any pending timer from a prior status can't
+			// fire and wipe this one — important for the sticky case, which has no
+			// timer of its own.
+			nm.statusSeq++
+			if sticky || ttl <= 0 {
+				return nm, cmd // kept until replaced (sticky), or auto-clear disabled
+			}
+			seq := nm.statusSeq
+			tick := tea.Tick(ttl, func(time.Time) tea.Msg { return clearStatusMsg{seq} })
+			return nm, tea.Batch(cmd, tick)
+		}
+		return nm, cmd
 	}
 
 	// default: pass to list
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
+}
+
+// flashStatusCmd schedules the current m.status to auto-clear after the
+// configured delay (Settings.StatusSeconds; <= 0 disables it). It bumps the seq
+// so a later status cancels this timer. Returns nil when there's nothing to do.
+func (m *model) flashStatusCmd() tea.Cmd {
+	if m.status == "" || m.settings.StatusSeconds <= 0 {
+		return nil
+	}
+	m.statusSeq++
+	seq := m.statusSeq
+	d := time.Duration(m.settings.StatusSeconds) * time.Second
+	return tea.Tick(d, func(time.Time) tea.Msg { return clearStatusMsg{seq} })
+}
+
+// routeKey dispatches a key press to the handler for the current mode. The
+// caller (Update) wraps the result to auto-clear any new transient status.
+func (m model) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 💡 I opens the ideas list from any read/navigation view (not while
+	// typing, searching, or already inside the ideas/mind-map area).
+	if msg.String() == "I" && ideasHotkeyMode(m.mode) {
+		m.ideas = LoadIdeas()
+		m.ideaCursor = 0
+		m.mode = modeIdeaList
+		return m, nil
+	}
+	// Global navigation: p → projects list, h → home listing, from any
+	// read/navigation view. (modeList keeps its own handlers so focus/pin
+	// mode can still suppress them.)
+	if nm, cmd, handled := m.navHotkey(msg); handled {
+		return nm, cmd
+	}
+	switch m.mode {
+	case modeList:
+		return m.updateList(msg)
+	case modeAdd, modeSearch:
+		return m.updateInput(msg)
+	case modeConfirm:
+		return m.updateConfirm(msg)
+	case modeProjectPick:
+		return m.updateProjectPick(msg)
+	case modeHelp:
+		return m.updateHelp(msg)
+	case modeDetail:
+		return m.updateDetail(msg)
+	case modeDetailEdit:
+		return m.updateDetailEdit(msg)
+	case modeCommentAdd:
+		return m.updateCommentAdd(msg)
+	case modePriorityPick:
+		return m.updatePriorityPick(msg)
+	case modeOnboard:
+		return m.updateOnboard(msg)
+	case modeOnboardLabel:
+		return m.updateOnboardLabel(msg)
+	case modeClearData:
+		return m.updateClearData(msg)
+	case modeOptions:
+		return m.updateOptions(msg)
+	case modeOptionsEdit:
+		return m.updateOptionsEdit(msg)
+	case modeOnlineSearch:
+		return m.updateOnlineSearch(msg)
+	case modeCommand:
+		return m.updateCommand(msg)
+	case modeProjectAdd:
+		return m.updateProjectAdd(msg)
+	case modeProjectDelete:
+		return m.updateProjectDelete(msg)
+	case modeIdeaAdd:
+		return m.updateIdeaAdd(msg)
+	case modeIdeaList:
+		return m.updateIdeaList(msg)
+	case modeIdeaRename:
+		return m.updateIdeaRename(msg)
+	case modeIdeaConfirmDelete:
+		return m.updateIdeaConfirmDelete(msg)
+	case modeMindMap:
+		if m.mindOverview {
+			return m.updateMindOverview(msg)
+		}
+		return m.updateMindMap(msg)
+	case modeMindEdit:
+		return m.updateMindEdit(msg)
+	case modeMindHelp:
+		// Any key closes the mind-map help and returns to the map.
+		m.mode = modeMindMap
+		return m, nil
+	case modeMindPalette:
+		return m.updateMindPalette(msg)
+	case modeMindSearch:
+		return m.updateMindSearch(msg)
+	case modeMindConfirmUnbind:
+		return m.updateMindConfirmUnbind(msg)
+	case modeDeadlinePick:
+		return m.updateDeadlinePick(msg)
+	case modeDuePick:
+		return m.updateDuePick(msg)
+	case modeTimezone:
+		return m.updateTimezone(msg)
+	case modePalette:
+		return m.updatePalette(msg)
+	case modeAbout:
+		// Any key closes the about screen.
+		m.mode = modeList
+		return m, nil
+	}
+	// Unhandled mode → pass the key to the list.
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
@@ -1607,6 +1737,61 @@ func ideasHotkeyMode(mo mode) bool {
 		return true
 	}
 	return false
+}
+
+// projectsHotkeyMode reports where the global "p" → projects-list jump applies.
+// modeList is excluded because its own handler honours focus/pin mode.
+func projectsHotkeyMode(mo mode) bool {
+	switch mo {
+	case modeDetail, modeHelp, modeAbout, modeOptions, modeIdeaList, modeMindMap:
+		return true
+	}
+	return false
+}
+
+// homeHotkeyMode reports where the global "h" → home jump applies. modeList,
+// modeDetail and modeIdeaList already bind "h" themselves; modeMindMap is
+// excluded because there "h" is parent navigation (paired with "l").
+func homeHotkeyMode(mo mode) bool {
+	switch mo {
+	case modeHelp, modeAbout, modeOptions:
+		return true
+	}
+	return false
+}
+
+// navHotkey handles the global p (→ projects) / h (→ home) shortcuts. It returns
+// handled=false when the key isn't one of those or the current mode opts out, so
+// the caller falls through to the normal per-mode handler.
+func (m model) navHotkey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "p":
+		if !projectsHotkeyMode(m.mode) {
+			return m, nil, false
+		}
+		if m.mode == modeMindMap {
+			SaveIdeas(m.ideas) // don't lose in-progress map edits on the jump out
+		}
+		m.mindZoom = false
+		m.mindOverview = false
+		m.mode = modeProjectPick
+		m.pickIntent = pickView
+		m.err = ""
+		m.projQuery = ""
+		m.setPickerItems()
+		m.selectLastProject()
+		return m, nil, true
+	case "h":
+		if !homeHotkeyMode(m.mode) {
+			return m, nil, false
+		}
+		m.mode = modeList
+		m.homeFlash = true
+		cmd := m.commit(viewState{})
+		flash := tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return homeFlashOffMsg{} })
+		return m, tea.Batch(cmd, flash), true
+	}
+	return m, nil, false
 }
 
 func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2455,6 +2640,11 @@ func (m model) updateIdeaList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
 			m.mindIdea = m.ideaCursor
 			m.mindCursor = 0
+			m.mindZoom = false
+			m.mindOverview = false
+			m.mindSearch = "" // don't carry a stale search into a fresh map
+			m.mindUndo = nil  // undo history is per-map session
+			m.status = ""
 			m.mode = modeMindMap
 		}
 		return m, nil
@@ -2481,14 +2671,34 @@ func (m model) updateIdeaList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "x", "d":
-		// Delete the selected idea.
+		// Confirm before deleting the selected idea (deleting also drops its
+		// mind map).
+		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
+			m.mode = modeIdeaConfirmDelete
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateIdeaConfirmDelete handles the y/n confirmation before deleting an idea.
+// Deleting an idea removes it and its whole mind map from local storage.
+func (m model) updateIdeaConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
 		if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
 			m.ideas = append(m.ideas[:m.ideaCursor], m.ideas[m.ideaCursor+1:]...)
 			SaveIdeas(m.ideas)
 			if m.ideaCursor >= len(m.ideas) && m.ideaCursor > 0 {
 				m.ideaCursor--
 			}
+			m.status = "idea deleted"
 		}
+		m.mode = modeIdeaList
+		return m, nil
+	case "n", "esc":
+		m.mode = modeIdeaList
+		m.status = "delete cancelled"
 		return m, nil
 	}
 	return m, nil
@@ -2573,7 +2783,7 @@ func (m model) mindRows() []mindRow {
 				node: n, parent: children, index: i, depth: depth,
 				prefix: b.String(), last: last,
 			})
-			if !n.Collapsed && len(n.Children) > 0 {
+			if (!n.Collapsed || m.mindOverview) && len(n.Children) > 0 {
 				walk(&n.Children, depth+1, append(append([]bool{}, ancestorsLast...), last))
 			}
 		}
@@ -2590,6 +2800,33 @@ func (m model) mindIndexOf(target *MindNode) int {
 		}
 	}
 	return 0
+}
+
+// locateMind finds node within the current idea's tree. It returns the slice
+// that holds it (cont) and its index, plus the parent node (nil when node is a
+// top-level child of the root), the slice holding the parent (parCont) and the
+// parent's index. found is false if node isn't in the tree. The returned slice
+// pointers alias the live tree, so callers can mutate the structure through them.
+func (m model) locateMind(node *MindNode) (cont *[]*MindNode, idx int, parent *MindNode, parCont *[]*MindNode, parIdx int, found bool) {
+	if m.mindIdea < 0 || m.mindIdea >= len(m.ideas) {
+		return nil, 0, nil, nil, 0, false
+	}
+	var walk func(children *[]*MindNode, par *MindNode, parContainer *[]*MindNode, parIndex int) bool
+	walk = func(children *[]*MindNode, par *MindNode, parContainer *[]*MindNode, parIndex int) bool {
+		for i := range *children {
+			n := (*children)[i]
+			if n == node {
+				cont, idx, parent, parCont, parIdx, found = children, i, par, parContainer, parIndex, true
+				return true
+			}
+			if walk(&n.Children, n, children, i) {
+				return true
+			}
+		}
+		return false
+	}
+	walk(&m.ideas[m.mindIdea].Children, nil, nil, -1)
+	return
 }
 
 func absInt(x int) int {
@@ -2678,7 +2915,17 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mindZoom = false
 			return m, nil
 		}
-		// Back to the idea list (b is "back" everywhere).
+		// With an active search, esc first clears it (query + match status) and
+		// stays in the map — a clean way to leave "search mode".
+		if msg.String() == "esc" && m.mindSearch != "" {
+			m.mindSearch = ""
+			m.status = ""
+			return m, nil
+		}
+		// Back to the idea list (b is "back" everywhere). Clear transient search
+		// state so a stale "match N/N" never lingers into the next visit.
+		m.mindSearch = ""
+		m.status = ""
 		SaveIdeas(m.ideas)
 		m.mode = modeIdeaList
 		return m, nil
@@ -2694,6 +2941,30 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Dedicated mind-map keyboard help.
 		m.mode = modeMindHelp
 		return m, nil
+	case "p":
+		// Jump to the projects list. Direct key presses are caught by the global
+		// intercept in Update; this branch serves the quick-action palette.
+		if nm, cmd, ok := m.navHotkey(msg); ok {
+			return nm, cmd
+		}
+		return m, nil
+	case "/":
+		// Search nodes by text; n/N cycle through the matches.
+		m.mode = modeMindSearch
+		m.input.EchoMode = textinput.EchoNormal
+		m.input.Placeholder = "search nodes…"
+		m.input.SetValue(m.mindSearch)
+		m.input.CursorEnd()
+		m.input.Focus()
+		return m, textinput.Blink
+	case "n":
+		// Jump to the next search match (wraps).
+		m.mindJumpMatch(true)
+		return m, nil
+	case "N":
+		// Jump to the previous search match (wraps).
+		m.mindJumpMatch(false)
+		return m, nil
 	case "z":
 		// Zoom: overlay the selected node's full text on top of the map (labels
 		// are truncated to mmMaxText runes, so long nodes get cut off). The map
@@ -2702,9 +2973,36 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// opens help while zoomed.
 		m.mindZoom = !m.mindZoom
 		return m, nil
+	case "Z":
+		// Overview: full-screen, all-branches-expanded, read-only view of the
+		// whole map. Z/esc closes it. (Edits are blocked in updateMindOverview.)
+		m.mindZoom = false
+		m.mindOverview = true
+		m.status = ""
+		return m, nil
 	case "r":
 		// Jump back to the root node (left-most / first node).
 		m.mindCursor = 0
+		return m, nil
+	case "u":
+		// Undo the last mind-map change (paste, cut, delete, reorder, edit, …).
+		if len(m.mindUndo) == 0 {
+			m.status = "nothing to undo"
+			return m, nil
+		}
+		snap := m.mindUndo[len(m.mindUndo)-1]
+		m.mindUndo = m.mindUndo[:len(m.mindUndo)-1]
+		if ideas, ok := restoreIdeas(snap); ok {
+			m.ideas = ideas
+			SaveIdeas(m.ideas)
+			if rows := m.mindRows(); m.mindCursor >= len(rows) {
+				m.mindCursor = len(rows) - 1
+			}
+			if m.mindCursor < 0 {
+				m.mindCursor = 0
+			}
+			m.status = "↩ undone"
+		}
 		return m, nil
 	case "R":
 		// Rename the root node — i.e. the idea itself (label + stored idea text).
@@ -2757,12 +3055,61 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mindCursor++
 		}
 		return m, nil
-	case "c", "C", "v", "V":
-		// Colour cycling: c/C = outline, v/V = background; uppercase also paints
-		// every descendant. The root's colour lives on the idea itself.
+	case "shift+up":
+		// Reorder: swap the selected node with its previous sibling (move up).
+		if cur.isRoot || cur.parent == nil {
+			m.status = "the root can't be reordered"
+			return m, nil
+		}
+		if cur.index == 0 {
+			m.status = "already first among its siblings"
+			return m, nil
+		}
+		(*cur.parent)[cur.index-1], (*cur.parent)[cur.index] = (*cur.parent)[cur.index], (*cur.parent)[cur.index-1]
+		SaveIdeas(m.ideas)
+		m.mindCursor = m.mindIndexOf(cur.node)
+		m.status = "moved up"
+		return m, nil
+	case "shift+down":
+		// Reorder: swap the selected node with its next sibling (move down).
+		if cur.isRoot || cur.parent == nil {
+			m.status = "the root can't be reordered"
+			return m, nil
+		}
+		if cur.index+1 >= len(*cur.parent) {
+			m.status = "already last among its siblings"
+			return m, nil
+		}
+		(*cur.parent)[cur.index], (*cur.parent)[cur.index+1] = (*cur.parent)[cur.index+1], (*cur.parent)[cur.index]
+		SaveIdeas(m.ideas)
+		m.mindCursor = m.mindIndexOf(cur.node)
+		m.status = "moved down"
+		return m, nil
+	case "shift+left":
+		// Promote (outdent): make the node a sibling of its parent, inserted just
+		// after it. Top-level children have no grandparent to move up to.
+		if cur.isRoot {
+			m.status = "the root can't be promoted"
+			return m, nil
+		}
+		cont, idx, parent, parCont, parIdx, ok := m.locateMind(cur.node)
+		if !ok || parent == nil {
+			m.status = "already at the top level — can't promote further"
+			return m, nil
+		}
+		*cont = append((*cont)[:idx], (*cont)[idx+1:]...)
+		*parCont = insertMindNode(*parCont, parIdx+1, cur.node)
+		SaveIdeas(m.ideas)
+		m.mindCursor = m.mindIndexOf(cur.node)
+		m.status = "promoted to its parent's sibling"
+		return m, nil
+	case "o", "O", "f", "F":
+		// Colour cycling: o/O = outline, f/F = background fill; uppercase also
+		// paints every descendant. The root's colour lives on the idea itself.
+		// (c/v are cut/paste, so colour moved to o = Outline and f = Fill.)
 		key := msg.String()
-		subtree := key == "C" || key == "V"
-		outline := key == "c" || key == "C"
+		subtree := key == "O" || key == "F"
+		outline := key == "o" || key == "O"
 		if cur.isRoot {
 			idea := &m.ideas[m.mindIdea]
 			if outline {
@@ -2791,8 +3138,8 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		SaveIdeas(m.ideas)
 		return m, nil
-	case "tab", "o":
-		// Tab adds a child to the selected node.
+	case "tab":
+		// Tab adds a child to the selected node. (o is now outline colour.)
 		n := &MindNode{}
 		if cur.isRoot {
 			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
@@ -2857,7 +3204,7 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(pending) == 0 {
-			m.status = "no nodes marked as task — press t on nodes first"
+			m.status = "⚠ no tasks yet — press t on a node to mark it as a task first"
 			return m, nil
 		}
 		m.mode = modeProjectPick
@@ -2891,26 +3238,236 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "syncing…"
 		}
 		return m, tea.Batch(syncNowCmd(m.cache.SyncToken, m.queue), spinnerTick())
-	case "x":
-		// x only completes/reopens task nodes. On a non-task node it does
-		// nothing — use d to delete.
+	case "X":
+		// X completes/reopens task nodes (moved off x, which is now cut). On a
+		// non-task node it does nothing — use d to delete.
 		if cur.isRoot || !cur.node.IsTask {
 			m.status = "not a task — press t to mark, or d to delete"
 			return m, nil
 		}
 		return m.toggleMindDone(cur.node), nil
-	case "d", "delete":
-		// Delete the node and its whole subtree — ask first. The root can't be
-		// deleted (it's the idea — rename it with R, or remove it from the list).
+	case "x":
+		// Cut the selected node and its subtree to the clipboard (recoverable via
+		// v / V paste). The root is the idea itself and can't be cut.
+		if cur.isRoot {
+			m.status = "the root is the idea — can't cut it"
+			return m, nil
+		}
+		m.mindClip = cloneMindNode(cur.node)
+		label := mmTruncate(cur.node.Text, 24)
+		removeMindNode(&m.ideas[m.mindIdea].Children, cur.node)
+		SaveIdeas(m.ideas)
+		if n := len(m.mindRows()); m.mindCursor >= n {
+			m.mindCursor = n - 1
+		}
+		if m.mindCursor < 0 {
+			m.mindCursor = 0
+		}
+		m.status = "✂ cut “" + label + "” — v paste child · V paste sibling"
+		m.statusFlash = statusSticky // buffer reminder stays up while the clipboard is full
+		return m, nil
+	case "c":
+		// Copy the selected node and its subtree to the clipboard.
+		if cur.isRoot {
+			m.status = "the root is the idea — copy a branch instead"
+			return m, nil
+		}
+		m.mindClip = cloneMindNode(cur.node)
+		m.status = "⧉ copied “" + mmTruncate(cur.node.Text, 24) + "” — v paste child · V paste sibling"
+		m.statusFlash = statusSticky // buffer reminder stays up while the clipboard is full
+		return m, nil
+	case "v":
+		// Paste the clipboard as a child of the selected node.
+		if m.mindClip == nil {
+			m.status = "clipboard is empty — x cut or c copy a node first"
+			return m, nil
+		}
+		n := cloneMindNode(m.mindClip)
+		unlinkMindTasks([]*MindNode{n}) // a pasted copy is new & unlinked from Todoist
+		if cur.isRoot {
+			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
+		} else {
+			cur.node.Collapsed = false
+			cur.node.Children = append(cur.node.Children, n)
+		}
+		SaveIdeas(m.ideas)
+		m.mindCursor = m.mindIndexOf(n)
+		// One-shot confirmation: the clipboard stays full (paste is repeatable),
+		// but this line clears itself after a few seconds.
+		m.status = "📋 pasted as child"
+		m.statusFlash = 5 * time.Second
+		return m, nil
+	case "V":
+		// Paste the clipboard as a sibling after the selected node (the root has
+		// no siblings, so it pastes as the root's child instead).
+		if m.mindClip == nil {
+			m.status = "clipboard is empty — x cut or c copy a node first"
+			return m, nil
+		}
+		n := cloneMindNode(m.mindClip)
+		unlinkMindTasks([]*MindNode{n})
+		if cur.isRoot {
+			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
+		} else {
+			*cur.parent = insertMindNode(*cur.parent, cur.index+1, n)
+		}
+		SaveIdeas(m.ideas)
+		m.mindCursor = m.mindIndexOf(n)
+		m.status = "📋 pasted as sibling"
+		m.statusFlash = 5 * time.Second
+		return m, nil
+	case "backspace", "delete":
+		// Delete the node and its whole subtree immediately (no confirmation — u
+		// undoes it). The root can't be deleted (it's the idea — rename with R).
 		if cur.isRoot {
 			m.status = "the root can't be deleted — it's the idea (press R to rename)"
 			return m, nil
 		}
-		m.mindDelTarget = cur.node
-		m.mode = modeMindConfirmDelete
+		label := mmTruncate(cur.node.Text, 24)
+		removeMindNode(&m.ideas[m.mindIdea].Children, cur.node)
+		SaveIdeas(m.ideas)
+		if n := len(m.mindRows()); m.mindCursor >= n {
+			m.mindCursor = n - 1
+		}
+		if m.mindCursor < 0 {
+			m.mindCursor = 0
+		}
+		m.status = "🗑 deleted “" + label + "” — u to undo"
 		return m, nil
 	}
 	return m, nil
+}
+
+// updateMindOverview handles keys while the read-only overview (Z) is open. Only
+// navigation (to pan), root-jump, help and close are allowed — every editing /
+// task / colour key is ignored, and navigation is delegated to updateMindMap so
+// there's a single source of truth for cursor movement.
+func (m model) updateMindOverview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "Z", "esc", "q", "b":
+		// With an active search, esc clears it first (stays in the overview).
+		if msg.String() == "esc" && m.mindSearch != "" {
+			m.mindSearch = ""
+			m.status = ""
+			return m, nil
+		}
+		m.mindOverview = false
+		m.mindSearch = ""
+		m.status = ""
+		return m, nil
+	case "H", "?":
+		m.mode = modeMindHelp
+		return m, nil
+	case "up", "k", "down", "j", "left", "h", "right", "l", "r", "/", "n", "N":
+		// Read-only navigation + search (/, n, N) — reuse the map's handlers.
+		// Search stays within the full-screen overview (mindOverview is kept on).
+		return m.updateMindMap(msg)
+	}
+	return m, nil
+}
+
+// updateMindSearch handles typing the /-search query. Enter jumps to the first
+// match (and keeps the query live for n/N); esc cancels and clears it.
+func (m model) updateMindSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mindSearch = ""
+		m.mode = modeMindMap
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		m.mindSearch = strings.TrimSpace(m.input.Value())
+		m.mode = modeMindMap
+		m.input.Blur()
+		if m.mindSearch == "" {
+			return m, nil
+		}
+		matches := m.mindMatches()
+		if len(matches) == 0 {
+			m.status = "no nodes match “" + m.mindSearch + "”"
+			return m, nil
+		}
+		// Jump to the first match at or after the current cursor.
+		m.mindCursor = matches[0]
+		for _, idx := range matches {
+			if idx >= m.mindCursor {
+				m.mindCursor = idx
+				break
+			}
+		}
+		m.status = fmt.Sprintf("match 1/%d for “%s” · n/N cycle · esc clear", len(matches), m.mindSearch)
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// mindMatches returns the visible row indices whose label contains the active
+// search query (case-insensitive), in display order.
+func (m model) mindMatches() []int {
+	q := strings.ToLower(strings.TrimSpace(m.mindSearch))
+	if q == "" {
+		return nil
+	}
+	idea := Idea{}
+	if m.mindIdea >= 0 && m.mindIdea < len(m.ideas) {
+		idea = m.ideas[m.mindIdea]
+	}
+	var out []int
+	for i, r := range m.mindRows() {
+		if strings.Contains(strings.ToLower(r.label(idea)), q) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// mindJumpMatch moves the cursor to the next (forward) or previous match,
+// wrapping around. It's a no-op when there's no active query / no matches.
+func (m *model) mindJumpMatch(forward bool) {
+	matches := m.mindMatches()
+	if len(matches) == 0 {
+		if m.mindSearch != "" {
+			m.status = "no nodes match “" + m.mindSearch + "”"
+		}
+		return
+	}
+	// Find where we are relative to the matches.
+	pos := -1
+	for i, idx := range matches {
+		if idx == m.mindCursor {
+			pos = i
+			break
+		}
+	}
+	var next int
+	switch {
+	case pos == -1 && forward:
+		next = 0
+		for i, idx := range matches {
+			if idx > m.mindCursor {
+				next = i
+				break
+			}
+		}
+	case pos == -1:
+		next = len(matches) - 1
+		for i := len(matches) - 1; i >= 0; i-- {
+			if matches[i] < m.mindCursor {
+				next = i
+				break
+			}
+		}
+	case forward:
+		next = (pos + 1) % len(matches)
+	default:
+		next = (pos - 1 + len(matches)) % len(matches)
+	}
+	m.mindCursor = matches[next]
+	m.status = fmt.Sprintf("match %d/%d for “%s” · esc clear", next+1, len(matches), m.mindSearch)
 }
 
 // topUpBoundIdeas creates Todoist tasks for any task-flagged nodes that aren't
@@ -2945,35 +3502,6 @@ func (m *model) topUpBoundIdeas() int {
 		SaveIdeas(m.ideas)
 	}
 	return total
-}
-
-// updateMindConfirmDelete handles the y/n delete confirmation in the mind map.
-// Deleting only removes the node from the map — any linked Todoist task is left
-// in place.
-func (m model) updateMindConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		if m.mindDelTarget != nil {
-			removeMindNode(&m.ideas[m.mindIdea].Children, m.mindDelTarget)
-			SaveIdeas(m.ideas)
-			if n := len(m.mindRows()); m.mindCursor >= n {
-				m.mindCursor = n - 1
-			}
-			if m.mindCursor < 0 {
-				m.mindCursor = 0
-			}
-			m.status = "node deleted"
-		}
-		m.mindDelTarget = nil
-		m.mode = modeMindMap
-		return m, nil
-	case "n", "esc":
-		m.mindDelTarget = nil
-		m.mode = modeMindMap
-		m.status = "delete cancelled"
-		return m, nil
-	}
-	return m, nil
 }
 
 // updateMindConfirmUnbind handles the y/n confirmation for unbinding the idea's
@@ -3039,13 +3567,52 @@ func (m model) beginMindEdit(node *MindNode, text string) (tea.Model, tea.Cmd) {
 func (m model) updateMindEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.commitMindEdit(true)
+		// Esc finishes editing: save what's typed but WITHOUT opening a new
+		// sibling (it's the "plain commit" that Enter used to be). With nothing
+		// typed it cancels — discarding a brand-new empty node.
+		if strings.TrimSpace(m.input.Value()) == "" {
+			m.commitMindEdit(true)
+		} else {
+			m.commitMindEdit(false)
+		}
 		m.mode = modeMindMap
 		return m, nil
 	case "enter":
+		// Standard outliner flow: Enter accepts the entry and opens the next
+		// sibling. Enter on an empty entry (or on the root) finishes instead.
+		node := m.mindEditNode
+		discarded := m.mindEditNew && strings.TrimSpace(m.input.Value()) == ""
 		m.commitMindEdit(false)
 		m.mode = modeMindMap
-		return m, nil
+		if discarded || node == nil {
+			return m, nil
+		}
+		n := &MindNode{}
+		if cont, idx, _, _, _, ok := m.locateMind(node); ok {
+			*cont = insertMindNode(*cont, idx+1, n)
+		} else {
+			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
+		}
+		m.mindCursor = m.mindIndexOf(n)
+		return m.beginMindEdit(n, "")
+	case "tab":
+		// Standard outliner flow: Tab accepts the entry and opens a child (indent).
+		node := m.mindEditNode
+		discarded := m.mindEditNew && strings.TrimSpace(m.input.Value()) == ""
+		m.commitMindEdit(false)
+		m.mode = modeMindMap
+		if discarded {
+			return m, nil // empty new node was thrown away — nothing to nest under
+		}
+		n := &MindNode{}
+		if node == nil { // editing the root → add a child of the root
+			m.ideas[m.mindIdea].Children = append(m.ideas[m.mindIdea].Children, n)
+		} else {
+			node.Collapsed = false
+			node.Children = append(node.Children, n)
+		}
+		m.mindCursor = m.mindIndexOf(n)
+		return m.beginMindEdit(n, "")
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -3439,7 +4006,20 @@ func (m model) optionRows() []struct{ label, value string } {
 		{"Date format", dateInputHint() + "  (enter to cycle)"},
 		{"Timezone", m.settings.Timezone + "  " + tzOffsetLabel(m.settings.Timezone) + "  (enter to choose)"},
 		{"Default sort", sortVal + "  (enter to cycle)"},
+		{"Mind-map underline", m.settings.MindUnderline + "  (enter to cycle)"},
+		{"Status auto-clear", statusSecondsLabel(m.settings.StatusSeconds) + "  (enter to cycle)"},
 	}
+}
+
+// statusSecondsCycle is the order the "Status auto-clear" menu steps through.
+var statusSecondsCycle = []int{3, 5, 10, 30, -1} // -1 = off
+
+// statusSecondsLabel renders the status-timeout value for the menu.
+func statusSecondsLabel(secs int) string {
+	if secs <= 0 {
+		return "off"
+	}
+	return fmt.Sprintf("%d seconds", secs)
 }
 
 func (m model) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -3500,6 +4080,30 @@ func (m model) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sortMode, m.sortDesc = next, desc
 			m.applyView()
 			m.status = "default sort: " + m.settings.DefaultSort
+			return m, nil
+		}
+		if m.optCursor == 7 {
+			// Mind-map underline colour cycles in place and applies immediately.
+			m.settings.MindUnderline = nextMindUnderline(m.settings.MindUnderline)
+			if c := mindUnderlineColorByName(m.settings.MindUnderline); c != "" {
+				mindUnderlineColor = c
+			}
+			m.settings.Save()
+			m.status = "mind-map underline: " + m.settings.MindUnderline
+			return m, nil
+		}
+		if m.optCursor == 8 {
+			// Status auto-clear delay cycles in place (3 → 5 → 10 → 30 → off).
+			idx := 0
+			for i, s := range statusSecondsCycle {
+				if s == m.settings.StatusSeconds {
+					idx = i
+					break
+				}
+			}
+			m.settings.StatusSeconds = statusSecondsCycle[(idx+1)%len(statusSecondsCycle)]
+			m.settings.Save()
+			m.status = "status auto-clear: " + statusSecondsLabel(m.settings.StatusSeconds)
 			return m, nil
 		}
 		m.mode = modeOptionsEdit
@@ -3781,12 +4385,13 @@ func (m model) View() string {
 	}
 
 	// Idea catcher overlays everything (even a pinned task).
-	if m.mode == modeIdeaAdd || m.mode == modeIdeaList || m.mode == modeIdeaRename {
+	if m.mode == modeIdeaAdd || m.mode == modeIdeaList || m.mode == modeIdeaRename ||
+		m.mode == modeIdeaConfirmDelete {
 		return m.ideaView(header)
 	}
 
 	// Mind-map editor takes over the whole body.
-	if m.mode == modeMindMap || m.mode == modeMindEdit {
+	if m.mode == modeMindMap || m.mode == modeMindEdit || m.mode == modeMindSearch {
 		return m.mindMapView(header)
 	}
 	if m.mode == modeMindHelp {
@@ -3794,9 +4399,6 @@ func (m model) View() string {
 	}
 	if m.mode == modeMindPalette {
 		return m.mindPaletteView(header)
-	}
-	if m.mode == modeMindConfirmDelete {
-		return m.mindConfirmDeleteView(header)
 	}
 	if m.mode == modeMindConfirmUnbind {
 		return m.mindConfirmUnbindView(header)
@@ -3930,7 +4532,7 @@ func (m model) ideaView(header string) string {
 				text := txtStyle.Width(innerW).Render(strings.ReplaceAll(strings.TrimSpace(idea.Text), "\n", " "))
 				rows = append(rows, cur+when, "  "+text, "")
 			}
-			rows = append(rows, dim.Render("j/k move · enter open map · i catch · R rename · x delete · b back · h home"))
+			rows = append(rows, dim.Render("j/k move · enter open map · i catch · R rename · x delete · p projects · b back · h home"))
 		}
 	}
 
@@ -3945,8 +4547,62 @@ func (m model) ideaView(header string) string {
 	if bodyH < 1 {
 		bodyH = 1
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header,
+	view := lipgloss.JoinVertical(lipgloss.Left, header,
 		lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, card))
+
+	// Delete confirmation floats as a centered modal over the (dimmed) list.
+	if m.mode == modeIdeaConfirmDelete {
+		bg := dimLines(strings.Split(view, "\n"))
+		modal := m.ideaConfirmModal()
+		mw := 0
+		if len(modal) > 0 {
+			mw = lineWidth(modal[0])
+		}
+		top := max0((len(bg) - len(modal)) / 2)
+		left := max0((m.width - mw) / 2)
+		view = strings.Join(overlayAt(bg, modal, top, left), "\n")
+	}
+	return view
+}
+
+// ideaConfirmModal builds the centered delete-confirmation popup shown over the
+// ideas list. It mirrors the mind-map confirm dialogs' look.
+func (m model) ideaConfirmModal() []string {
+	accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(subColor)
+	name := ""
+	if m.ideaCursor >= 0 && m.ideaCursor < len(m.ideas) {
+		name = strings.ReplaceAll(strings.TrimSpace(m.ideas[m.ideaCursor].Text), "\n", " ")
+	}
+
+	innerW := m.width - 16
+	if innerW > 48 {
+		innerW = 48
+	}
+	if innerW < 20 {
+		innerW = 20
+	}
+	nameStyle := lipgloss.NewStyle().Foreground(brightColor).Bold(true).
+		Width(innerW).Align(lipgloss.Center)
+	keys := lipgloss.NewStyle().Foreground(dueColor).Bold(true)
+
+	rows := []string{
+		accent.Width(innerW).Align(lipgloss.Center).Render("🗑  Delete idea?"),
+		"",
+		nameStyle.Render(truncPlain(name, innerW)),
+		"",
+		dim.Width(innerW).Align(lipgloss.Center).Render("This also deletes its mind map."),
+		"",
+		lipgloss.NewStyle().Width(innerW).Align(lipgloss.Center).Render(
+			keys.Render("y") + dim.Render(" delete  ·  ") + keys.Render("n") + dim.Render(" cancel")),
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(brandRed).
+		Padding(1, 3).
+		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
+	return strings.Split(box, "\n")
 }
 
 // pinnedTask returns the currently pinned task from the cache.

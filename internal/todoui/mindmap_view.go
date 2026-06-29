@@ -62,9 +62,53 @@ var mindPalette = []lipgloss.Color{
 // the label stays readable on any background colour.
 var mindInk = lipgloss.Color("#0b0f19")
 
+// mindBadgeColor tints the collapsed-children "(+N)" indicator so it stands out
+// from the node label (and from the yellow selection underline) — a clear cyan.
+var mindBadgeColor = lipgloss.Color("#22d3ee")
+
 // mindBlurColor is the faint grey the whole map is flattened to while zoomed, so
 // the centered popup reads as in-focus and the map as a blurred backdrop.
 var mindBlurColor = lipgloss.Color("#3a3f4b")
+
+// mindUnderlineChoices are the selectable colours for the mind-map selection
+// underline (the line under the selected node). Yellow is the bright default.
+var mindUnderlineChoices = []struct {
+	name  string
+	color lipgloss.Color
+}{
+	{"yellow", "#facc15"},
+	{"orange", "#fb923c"},
+	{"red", "#ef4444"},
+	{"green", "#4ade80"},
+	{"cyan", "#22d3ee"},
+	{"blue", "#60a5fa"},
+	{"purple", "#c084fc"},
+	{"pink", "#f472b6"},
+	{"white", "#ffffff"},
+}
+
+// mindUnderlineColor is the active selection-underline colour, set from settings.
+var mindUnderlineColor = lipgloss.Color("#facc15")
+
+// mindUnderlineColorByName resolves a choice name to its colour ("" if unknown).
+func mindUnderlineColorByName(name string) lipgloss.Color {
+	for _, c := range mindUnderlineChoices {
+		if c.name == name {
+			return c.color
+		}
+	}
+	return ""
+}
+
+// nextMindUnderline returns the name of the choice after the given one (wrapping).
+func nextMindUnderline(name string) string {
+	for i, c := range mindUnderlineChoices {
+		if c.name == name {
+			return mindUnderlineChoices[(i+1)%len(mindUnderlineChoices)].name
+		}
+	}
+	return mindUnderlineChoices[0].name
+}
 
 // paletteColor returns the colour for a 1-based index, or "" for 0 (default).
 func paletteColor(idx int) lipgloss.Color {
@@ -82,11 +126,12 @@ type mindBox struct {
 	editing  bool
 	depth    int
 	text     string
-	outline  int // outline colour index
-	bg       int // background colour index
-	w, h     int // box size in cells (h is always 3)
-	x, y     int // top-left cell
-	cy       int // vertical centre row
+	outline  int    // outline colour index
+	bg       int    // background colour index
+	w, h     int    // box size in cells (h is always 3)
+	x, y     int    // top-left cell
+	cy       int    // vertical centre row
+	badge    string // collapsed-children indicator, e.g. "(+2)" (drawn separately)
 	kids     []*mindBox
 }
 
@@ -97,9 +142,12 @@ const (
 	mmBoxH    = 3
 )
 
+// mmFlatten collapses newlines/leading-trailing space so a label fits one row.
+func mmFlatten(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "\n", " ") }
+
 // mmTruncate flattens whitespace and caps the text to max runes with an ellipsis.
 func mmTruncate(s string, max int) string {
-	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	s = mmFlatten(s)
 	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
@@ -112,7 +160,11 @@ func mmTruncate(s string, max int) string {
 
 // nodeBoxText is the label shown inside a node's box. Markers stay ASCII so each
 // glyph is exactly one cell wide and the canvas grid never drifts.
-func nodeBoxText(n *MindNode) string {
+func nodeBoxText(n *MindNode) string { return nodeLabel(n, true) }
+
+// nodeLabel builds a node's box label. When showCollapsed is false the "(+N)"
+// fold marker is omitted (used by the all-expanded overview).
+func nodeLabel(n *MindNode, showCollapsed bool) string {
 	t := n.Text
 	if t == "" {
 		t = "·"
@@ -124,7 +176,7 @@ func nodeBoxText(n *MindNode) string {
 		}
 		t = box + t
 	}
-	if n.Collapsed && len(n.Children) > 0 {
+	if showCollapsed && n.Collapsed && len(n.Children) > 0 {
 		t = fmt.Sprintf("%s (+%d)", t, len(n.Children))
 	}
 	return t
@@ -171,16 +223,27 @@ func (m model) buildMindBoxes() (root *mindBox, all []*mindBox, w, h int) {
 		default:
 			b.selected = node == selNode
 			b.editing = node == editNode
-			b.text = nodeBoxText(node)
+			b.text = nodeLabel(node, false) // (+N) is rendered as a separate badge
 			b.outline = node.Color
 			b.bg = node.BG
+			// Show a collapsed-children count even for a single child. Kept out of
+			// b.text so truncation of a long label can never swallow it.
+			if !m.mindOverview && node.Collapsed && len(node.Children) > 0 {
+				b.badge = fmt.Sprintf("(+%d)", len(node.Children))
+			}
 		}
 		if b.editing {
 			b.text = liveEdit
+			b.badge = ""
+		} else if m.mindOverview {
+			b.text = mmFlatten(b.text) // overview shows the full, untruncated label
 		} else {
 			b.text = mmTruncate(b.text, mmMaxText)
 		}
 		b.w = utf8.RuneCountInString(b.text) + 4 // 2 borders + 2 padding
+		if b.badge != "" {
+			b.w += 1 + utf8.RuneCountInString(b.badge) // a space + the badge
+		}
 		if b.w < 5 {
 			b.w = 5
 		}
@@ -189,7 +252,7 @@ func (m model) buildMindBoxes() (root *mindBox, all []*mindBox, w, h int) {
 		var children []*MindNode
 		if isRoot {
 			children = idea.Children
-		} else if !node.Collapsed {
+		} else if !node.Collapsed || m.mindOverview {
 			children = node.Children
 		}
 		for _, c := range children {
@@ -386,12 +449,32 @@ func (c *mindCanvas) drawBox(b *mindBox) {
 		tx++
 	}
 
-	// Selection cue: underline the box's bottom border row, so the line sits
-	// under the whole box rather than under the words.
+	// Collapsed-children badge, drawn after the label in its own colour so it
+	// never blends with the text and is immune to the label's truncation. On a
+	// filled box, fall back to ink so it stays legible.
+	if b.badge != "" {
+		badgeFg := mindBadgeColor
+		if bgCol != "" {
+			badgeFg = mindInk
+		}
+		tx++ // gap between the label and the badge
+		for _, r := range b.badge {
+			if tx >= x1 {
+				break
+			}
+			c.put(tx, b.cy, r, badgeFg, true, false)
+			tx++
+		}
+	}
+
+	// Selection cue: underline the box's bottom border row in the configured
+	// (bright) colour, so the line sits under the whole box rather than under
+	// the words and stands out from the border.
 	if b.selected {
 		for x := x0; x <= x1; x++ {
 			if c.in(x, y1) {
 				c.g[y1][x].ul = true
+				c.g[y1][x].fg = mindUnderlineColor
 			}
 		}
 	}
@@ -453,6 +536,10 @@ func (m model) mindMapView(header string) string {
 		bound = m.ideas[m.mindIdea].ProjectName
 	}
 	title := yellow.Render("🗺  Mind map")
+	if m.mindOverview {
+		title = yellow.Render("🗺  Mind map — overview") +
+			lipgloss.NewStyle().Foreground(subColor).Render("  (all expanded · read-only)")
+	}
 	if bound != "" {
 		title += lipgloss.NewStyle().Foreground(projectColor).Render("  → " + bound)
 	}
@@ -463,8 +550,16 @@ func (m model) mindMapView(header string) string {
 	}
 	var footer string
 	switch {
+	case m.mode == modeMindSearch:
+		footer = accentKey.Render("/ search") + dim.Render("  ") + m.input.View() +
+			dim.Render("   enter jump · esc cancel")
 	case m.mode == modeMindEdit:
-		footer = dim.Render("type · enter save · esc cancel")
+		footer = dim.Render("type · enter save + next sibling · tab save + child · esc done")
+	case m.mindOverview:
+		// Full-screen, all-expanded, read-only overview: pan + search only.
+		footer = accentKey.Render("Z/esc close") + dim.Render(
+			" · ↑↓/jk·←→/hl pan · r root · / find · n/N next·prev · ") +
+			accentKey.Render("H") + dim.Render(" help")
 	case m.mindZoom:
 		// Zoom overlay: the selected node's full text floats over the map, which
 		// stays navigable underneath; z/esc close it.
@@ -474,15 +569,30 @@ func (m model) mindMapView(header string) string {
 	default:
 		// "H help" is accented first so it stays visible, matching the task view.
 		footer = accentKey.Render("H help") + dim.Render(
-			" · ↑↓/jk siblings · ←→/hl parent·child · r root · tab child · enter sibling · e edit · z zoom · t task · "+
-				tHint+" · x done · d del · c/C colour · v/V fill · s sync · b back")
+			" · ↑↓/jk siblings · ←→/hl parent·child · ⇧↑↓ reorder · ⇧← promote · r root · / find · tab child · enter sibling · e edit · u undo · x cut · c copy · v/V paste · z zoom · Z overview · t task · "+
+				tHint+" · X done · bksp/del delete · o/O colour · f/F fill · p projects · s sync · b back")
 	}
 
-	viewH := m.height - lipgloss.Height(header) - 4 // title + gap + footer + margin
+	// Surface the transient status line (set by handlers like T) so the user
+	// gets feedback in the map — otherwise actions can look like no-ops.
+	if m.status != "" && m.mode != modeMindEdit {
+		footer = errStyle.Render(m.status) + "\n" + footer
+	}
+
+	// Overview is full-screen: it drops the app header and the title line, so the
+	// map gets the whole terminal minus the footer.
+	viewH := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 3 // title + gap + margin
+	if m.mindOverview {
+		// indicator row + a gap above and below the map + slack.
+		viewH = m.height - lipgloss.Height(footer) - 4
+	}
 	if viewH < 3 {
 		viewH = 3
 	}
 	viewW := m.width
+	if m.mindOverview {
+		viewW = m.width - mindOverviewMargin // leave a left margin (added on render)
+	}
 	if viewW < 10 {
 		viewW = 10
 	}
@@ -620,8 +730,29 @@ func (m model) mindMapView(header string) string {
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	if m.mindOverview {
+		// Full-screen: no app header, no title line — just a slim mode indicator,
+		// the map, and the footer shortcuts. Scroll affordance moves to the footer.
+		indicator := lipgloss.NewStyle().Background(brandRed).Foreground(brightColor).
+			Bold(true).Render(" 🗺  OVERVIEW MODE ")
+		if bound != "" {
+			indicator += lipgloss.NewStyle().Foreground(projectColor).Render("  → " + bound)
+		}
+		indicator += dim.Render("   all expanded · read-only")
+		foot := footer
+		if len(sh) > 0 {
+			foot = footer + dim.Render("   more: "+strings.Join(sh, " "))
+		}
+		// Gaps above/below the map and a left margin so nothing hugs the edges.
+		content := lipgloss.JoinVertical(lipgloss.Left, indicator, "", body, "", foot)
+		return lipgloss.NewStyle().MarginLeft(mindOverviewMargin).Render(content)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, titleLine, "", body, "", footer)
 }
+
+// mindOverviewMargin is the left margin (columns) kept around the overview so the
+// map and its chrome don't hug the terminal edges.
+const mindOverviewMargin = 3
 
 // mindZoomOverlay renders a floating popup with the selected node's full,
 // untruncated text — the boxes in the map cap labels to mmMaxText runes. It
@@ -706,6 +837,28 @@ func max0(v int) int {
 	return v
 }
 
+// lineWidth is the display width of a (possibly styled) line.
+func lineWidth(s string) int { return ansi.StringWidth(s) }
+
+// truncPlain truncates plain text to w columns with an ellipsis.
+func truncPlain(s string, w int) string { return ansi.Truncate(s, w, "…") }
+
+// dimLines flattens already-styled lines to a single faint colour, so a modal
+// floated on top reads as in-focus and the content behind it as a backdrop.
+func dimLines(lines []string) []string {
+	dim := lipgloss.NewStyle().Foreground(mindBlurColor)
+	out := make([]string, len(lines))
+	for i, ln := range lines {
+		plain := ansi.Strip(ln)
+		if strings.TrimSpace(plain) == "" {
+			out[i] = plain
+			continue
+		}
+		out[i] = dim.Render(plain)
+	}
+	return out
+}
+
 // mindAction is one runnable entry in the mind-map quick-action palette. msg is
 // dispatched into updateMindMap so the palette reuses the real key handlers.
 type mindAction struct {
@@ -721,18 +874,29 @@ var mindPaletteActions = []mindAction{
 	{"enter", "Add sibling node", tea.KeyMsg{Type: tea.KeyEnter}},
 	{"r", "Jump to the root node", mindRuneMsg('r')},
 	{"R", "Rename the root (the idea)", mindRuneMsg('R')},
+	{"/", "Search nodes by text", mindRuneMsg('/')},
 	{"e", "Edit node text", mindRuneMsg('e')},
+	{"shift+↑", "Reorder — move up among siblings", tea.KeyMsg{Type: tea.KeyShiftUp}},
+	{"shift+↓", "Reorder — move down among siblings", tea.KeyMsg{Type: tea.KeyShiftDown}},
+	{"shift+←", "Promote — sibling of its parent", tea.KeyMsg{Type: tea.KeyShiftLeft}},
+	{"x", "Cut node + subtree", mindRuneMsg('x')},
+	{"c", "Copy node + subtree", mindRuneMsg('c')},
+	{"v", "Paste as child", mindRuneMsg('v')},
+	{"V", "Paste as sibling", mindRuneMsg('V')},
+	{"u", "Undo the last change", mindRuneMsg('u')},
 	{"t", "Mark / unmark as task", mindRuneMsg('t')},
 	{"T", "Convert tasks → a project", mindRuneMsg('T')},
 	{"U", "Unbind project & unlink tasks", mindRuneMsg('U')},
-	{"x", "Complete / reopen task node", mindRuneMsg('x')},
-	{"d", "Delete node and subtree", mindRuneMsg('d')},
+	{"X", "Complete / reopen task node", mindRuneMsg('X')},
+	{"backspace", "Delete node and subtree", tea.KeyMsg{Type: tea.KeyBackspace}},
 	{"s", "Sync with Todoist", mindRuneMsg('s')},
-	{"c", "Outline colour — this node", mindRuneMsg('c')},
-	{"C", "Outline colour — node + children", mindRuneMsg('C')},
-	{"v", "Background fill — this node", mindRuneMsg('v')},
-	{"V", "Background fill — node + children", mindRuneMsg('V')},
+	{"o", "Outline colour — this node", mindRuneMsg('o')},
+	{"O", "Outline colour — node + children", mindRuneMsg('O')},
+	{"f", "Background fill — this node", mindRuneMsg('f')},
+	{"F", "Background fill — node + children", mindRuneMsg('F')},
 	{"space", "Collapse / expand branch", mindRuneMsg(' ')},
+	{"Z", "Overview — full-screen, all expanded", mindRuneMsg('Z')},
+	{"p", "Jump to the projects list", mindRuneMsg('p')},
 	{"H", "Mind-map help", mindRuneMsg('H')},
 	{"esc", "Save & back to ideas", tea.KeyMsg{Type: tea.KeyEsc}},
 }
@@ -830,48 +994,6 @@ func (m model) mindPaletteView(header string) string {
 	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, lines...)...)
 }
 
-// mindConfirmDeleteView asks to confirm deleting a node (and its subtree).
-func (m model) mindConfirmDeleteView(header string) string {
-	accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(subColor)
-	body := lipgloss.NewStyle().Foreground(textColor)
-
-	name := "(node)"
-	kids := 0
-	if m.mindDelTarget != nil {
-		name = strings.ReplaceAll(strings.TrimSpace(m.mindDelTarget.Text), "\n", " ")
-		if name == "" {
-			name = "(empty)"
-		}
-		kids = m.mindDelTarget.countNodes()
-	}
-	what := "Delete this node?"
-	if kids > 0 {
-		what = fmt.Sprintf("Delete this node and its %d child node(s)?", kids)
-	}
-	rows := []string{
-		accent.Render("🗺  " + what),
-		"",
-		body.Render("  " + mmTruncate(name, 60)),
-		"",
-		dim.Render("Any linked Todoist task is left in place."),
-		"",
-		accent.Render("y") + dim.Render(" delete    ") + accent.Render("n") + dim.Render(" cancel"),
-	}
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(brandRed).
-		Padding(1, 3).
-		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
-
-	bodyH := m.height - lipgloss.Height(header)
-	if bodyH < 1 {
-		bodyH = 1
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, header,
-		lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, card))
-}
-
 // mindConfirmUnbindView asks to confirm unbinding the idea's project.
 func (m model) mindConfirmUnbindView(header string) string {
 	accent := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
@@ -936,33 +1058,47 @@ func (m model) mindHelpView(header string) string {
 		row("→ / l", "Descend to the first child"),
 		row("r", "Jump to the root node (left-most)"),
 		row("R", "Rename the root node (the idea itself)"),
+		row("/", "Search nodes by text"),
+		row("n / N", "Jump to the next / previous search match"),
 		row("z", "Zoom — overlay the selected node's full text on the map"),
 		row("", "the map stays navigable underneath; z / esc closes it"),
+		row("Z", "Overview — full-screen, all-expanded, read-only map"),
+		row("", "navigate to pan; Z / esc closes it"),
 		"",
 		head.Render("  Edit the tree"),
 		row("Tab", "Add a child of the selected node"),
 		row("Enter", "Add a sibling after the selected node"),
 		row("e / i", "Edit the selected node's text"),
+		row("Shift+↑ / ↓", "Reorder — swap with the previous / next sibling"),
+		row("Shift+←", "Promote — make the node a sibling of its parent"),
 		row("Space", "Collapse / expand a branch"),
-		row("d / del", "Delete the node and its subtree (asks y/n)"),
+		row("bksp / del", "Delete the node and its subtree (u undoes it)"),
+		"",
+		head.Render("  Cut / copy / paste"),
+		row("x", "Cut the node + subtree to the clipboard"),
+		row("c", "Copy the node + subtree to the clipboard"),
+		row("v", "Paste as a child of the selected node"),
+		row("V", "Paste as a sibling after the selected node"),
+		row("u", "Undo the last change (paste, cut, delete, reorder, …)"),
 		"",
 		head.Render("  Tasks"),
 		row("t", "Mark / unmark as a task ([ ] checkbox)"),
 		row("T", "Convert marked tasks → a project (creates it if new)"),
 		row("", "an idea binds to ONE project; T tops up new tasks"),
 		row("U", "Unbind the project & unlink the generated tasks"),
-		row("x", "Complete / reopen a task node ([x]); ignored on non-tasks"),
+		row("X", "Complete / reopen a task node ([x]); ignored on non-tasks"),
 		row("s", "Sync — push tasks & pull completions from Todoist"),
 		row("", "completing in Todoist also ticks it here on sync"),
 		"",
 		head.Render("  Colour (10 colours, cycles)"),
-		row("c", "Cycle this node's outline colour"),
-		row("C", "Outline colour for node + all children"),
-		row("v", "Cycle this node's background fill"),
-		row("V", "Background fill for node + all children"),
+		row("o", "Cycle this node's Outline colour"),
+		row("O", "Outline colour for node + all children"),
+		row("f", "Cycle this node's background Fill"),
+		row("F", "Background fill for node + all children"),
 		"  " + dim.Render("palette: ") + strings.Join(swatches, ""),
 		"",
 		head.Render("  Leave"),
+		row("p", "Jump to the projects list (view by project)"),
 		row("esc / q / b", "Save and return to the idea list (b = back)"),
 		row("H / ?", "This help (press any key to close)"),
 	}
