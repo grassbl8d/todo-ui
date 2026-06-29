@@ -5,7 +5,11 @@ tagged. Versioning follows a Maven-style snapshot flow (see
 [`DEVELOPING.md`](DEVELOPING.md)): between releases `main.go` carries a `-dev`
 suffix for the upcoming version.
 
-## Unreleased — v0.2.4-dev
+## Unreleased — v0.2.5-dev
+
+_Nothing yet._
+
+## v0.2.4 — 2026-06-29
 
 ### Added
 - **Delete confirmation in the ideas list**: pressing `x` on an idea now opens a
