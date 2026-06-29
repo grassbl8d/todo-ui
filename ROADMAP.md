@@ -28,6 +28,13 @@ Display image attachments on a task — render inline previews where the termina
 supports it (e.g. iTerm2/Kitty graphics protocols), with a text fallback (link +
 filename) elsewhere. Read-only first; uploading is a later step.
 
+### 🗂 Group by mode
+An explicit grouping mode for the task list, separate from sorting: group tasks
+by project, priority, label, due/added date, etc., with a real section header per
+group and a count. Builds on the existing sort subheaders — adds collapsible
+groups (fold/unfold a section) and lets you pick the grouping field independently
+of the sort order.
+
 ## How this list works
 
 - Items here are intentions, not promises — order and scope can change.
