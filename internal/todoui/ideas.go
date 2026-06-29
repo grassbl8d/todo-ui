@@ -82,6 +82,15 @@ func setSubtreeStyle(children []*MindNode, style int) {
 	}
 }
 
+// clearMindStyles resets the outline/font/background colours and text style to
+// default on every node in the subtrees (leaving text, tasks and links intact).
+func clearMindStyles(children []*MindNode) {
+	for _, n := range children {
+		n.Color, n.FG, n.BG, n.Style = 0, 0, 0, 0
+		clearMindStyles(n.Children)
+	}
+}
+
 // unlinkMindTasks clears the Todoist link (and done state) on every node in the
 // subtrees, leaving the task flags intact.
 func unlinkMindTasks(children []*MindNode) {

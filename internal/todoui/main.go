@@ -285,12 +285,13 @@ const (
 	modeTimezone          // searchable IANA timezone picker
 	modePalette           // ` quick-action palette: search & run any command
 	modeAbout             // ~ about screen (logo + contributors)
-	modeMindMap           // 🗺 navigating an idea's mind map
-	modeMindEdit          // 🗺 typing a mind-map node's text
-	modeMindHelp          // 🗺 dedicated keyboard help for mind-map mode
-	modeMindPalette       // 🗺 ` quick-action palette for mind-map mode
-	modeMindSearch        // 🗺 / search nodes by text (n/N cycle matches)
-	modeMindConfirmUnbind // 🗺 y/n confirm before unbinding the project
+	modeMindMap           // ❖ navigating an idea's mind map
+	modeMindEdit          // ❖ typing a mind-map node's text
+	modeMindHelp          // ❖ dedicated keyboard help for mind-map mode
+	modeMindPalette       // ❖ ` quick-action palette for mind-map mode
+	modeMindSearch        // ❖ / search nodes by text (n/N cycle matches)
+	modeMindConfirmUnbind // ❖ y/n confirm before unbinding the project
+	modeMindConfirmReset  // ❖ y/n confirm before clearing all node styles
 )
 
 // deadlineOptions are the quick picks shown when setting a deadline.
@@ -550,7 +551,7 @@ const mindUndoCap = 50
 // tree changes should be captured for undo.
 func isMindMode(mo mode) bool {
 	switch mo {
-	case modeMindMap, modeMindEdit, modeMindConfirmUnbind, modeMindPalette, modeMindSearch:
+	case modeMindMap, modeMindEdit, modeMindConfirmUnbind, modeMindConfirmReset, modeMindPalette, modeMindSearch:
 		return true
 	}
 	return false
@@ -1733,6 +1734,8 @@ func (m model) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateMindSearch(msg)
 	case modeMindConfirmUnbind:
 		return m.updateMindConfirmUnbind(msg)
+	case modeMindConfirmReset:
+		return m.updateMindConfirmReset(msg)
 	case modeDeadlinePick:
 		return m.updateDeadlinePick(msg)
 	case modeDuePick:
@@ -3310,6 +3313,29 @@ func (m model) updateMindMap(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeMindConfirmUnbind
 		return m, nil
+	case "a":
+		// Reset (clear) THIS node's colours & text style to default (u undoes it).
+		if cur.isRoot {
+			idea := &m.ideas[m.mindIdea]
+			idea.Color, idea.FG, idea.BG, idea.Style = 0, 0, 0, 0
+		} else {
+			cur.node.Color, cur.node.FG, cur.node.BG, cur.node.Style = 0, 0, 0, 0
+		}
+		SaveIdeas(m.ideas)
+		m.status = "styles cleared — u to undo"
+		return m, nil
+	case "A":
+		// Reset this node AND all its descendants. On the root that's the whole
+		// map, so ask for confirmation first.
+		if cur.isRoot {
+			m.mode = modeMindConfirmReset
+			return m, nil
+		}
+		cur.node.Color, cur.node.FG, cur.node.BG, cur.node.Style = 0, 0, 0, 0
+		clearMindStyles(cur.node.Children)
+		SaveIdeas(m.ideas)
+		m.status = "branch styles cleared — u to undo"
+		return m, nil
 	case "s":
 		// Sync. First top up the bound project with any new task nodes, then flush
 		// and pull. Tasks already linked (or deleted in Todoist) are left alone.
@@ -3609,6 +3635,26 @@ func (m model) updateMindConfirmUnbind(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "esc":
 		m.mode = modeMindMap
 		m.status = "unbind cancelled"
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateMindConfirmReset handles the y/n confirmation for clearing every node's
+// colours and text style back to default.
+func (m model) updateMindConfirmReset(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		idea := &m.ideas[m.mindIdea]
+		idea.Color, idea.FG, idea.BG, idea.Style = 0, 0, 0, 0
+		clearMindStyles(idea.Children)
+		SaveIdeas(m.ideas)
+		m.mode = modeMindMap
+		m.status = "all styles cleared — u to undo"
+		return m, nil
+	case "n", "esc":
+		m.mode = modeMindMap
+		m.status = "reset cancelled"
 		return m, nil
 	}
 	return m, nil
@@ -4326,57 +4372,118 @@ func (m model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ---------- view ----------
 
+// mindScreen reports whether a mode is one of the mind-map screens, which carry
+// their own "Mind map" header instead of the Todoist task header.
+func mindScreen(mo mode) bool {
+	switch mo {
+	case modeMindMap, modeMindEdit, modeMindHelp, modeMindPalette, modeMindSearch,
+		modeMindConfirmUnbind, modeMindConfirmReset:
+		return true
+	}
+	return false
+}
+
+// ideasScreen reports whether a mode is one of the local ideas screens, which
+// share the mind area's branded header (they're not Todoist items either).
+func ideasScreen(mo mode) bool {
+	switch mo {
+	case modeIdeaList, modeIdeaAdd, modeIdeaRename, modeIdeaConfirmDelete:
+		return true
+	}
+	return false
+}
+
+// versionBadge renders "todo-ui <version>" for the top-right corner: the app
+// name styled prominently (bright + bold), the version kept subtle (dim).
+func versionBadge() string {
+	name := lipgloss.NewStyle().Foreground(brightColor).Bold(true).Render("todo-ui")
+	ver := lipgloss.NewStyle().Foreground(dimColor).Render(" " + version)
+	return name + ver + " "
+}
+
+// headerWithVersion right-aligns the version badge after the given left content.
+func (m model) headerWithVersion(left string) string {
+	ver := versionBadge()
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(ver)
+	if gap > 1 {
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), ver)
+	}
+	return left
+}
+
+// mindHeader is the header shown on the ideas / mind-map screens: a distinct
+// indigo pill (these are local items, not Todoist tasks). The ideas list shows
+// "💡 Ideas"; a map shows "❖ Mind map" with the idea name and bound project.
+func (m model) mindHeader() string {
+	pill := lipgloss.NewStyle().
+		Background(lipgloss.Color("#6366f1")). // indigo, distinct from the Todoist red
+		Foreground(brightColor).Bold(true).Padding(0, 1)
+	if ideasScreen(m.mode) {
+		return m.headerWithVersion(pill.Render("💡 Ideas"))
+	}
+	left := pill.Render("❖ Mind map")
+	if m.mindIdea >= 0 && m.mindIdea < len(m.ideas) {
+		idea := m.ideas[m.mindIdea]
+		left += statusStyle.Render(mmTruncate(idea.Text, 48))
+		if idea.ProjectName != "" {
+			left += lipgloss.NewStyle().Foreground(projectColor).Render("→ " + idea.ProjectName + " ")
+		}
+	}
+	return m.headerWithVersion(left)
+}
+
 func (m model) View() string {
 	if m.width == 0 {
 		return "loading…"
 	}
 
-	title := titleBarStyle.Render("✓ Todoist")
-	scope := "  all tasks"
-	if m.pinnedID != "" {
-		scope = "  📌 pinned"
-	} else if m.onlineView {
-		scope = "  online: " + m.onlineQuery
-	} else if m.recentView {
-		scope = "  recently added"
-	} else if m.filter != "" {
-		scope = "  filter: " + m.filter
+	var header string
+	if mindScreen(m.mode) || ideasScreen(m.mode) {
+		// Ideas & mind maps aren't Todoist items — give them their own header.
+		header = m.mindHeader()
 	} else {
-		var parts []string
-		if m.projectView != "" {
-			parts = append(parts, "project: "+m.projectView)
+		title := titleBarStyle.Render("✓ Todoist")
+		scope := "  all tasks"
+		if m.pinnedID != "" {
+			scope = "  📌 pinned"
+		} else if m.onlineView {
+			scope = "  online: " + m.onlineQuery
+		} else if m.recentView {
+			scope = "  recently added"
+		} else if m.filter != "" {
+			scope = "  filter: " + m.filter
+		} else {
+			var parts []string
+			if m.projectView != "" {
+				parts = append(parts, "project: "+m.projectView)
+			}
+			if m.priorityView != "" {
+				parts = append(parts, "priority: "+m.priorityView)
+			}
+			if m.textQuery != "" {
+				parts = append(parts, "search: "+m.textQuery)
+			}
+			if len(parts) > 0 {
+				scope = "  " + strings.Join(parts, " · ")
+			}
 		}
-		if m.priorityView != "" {
-			parts = append(parts, "priority: "+m.priorityView)
+		if m.sortMode != sortNone {
+			dir := "↑"
+			if m.sortDesc {
+				dir = "↓"
+			}
+			scope += lipgloss.NewStyle().Foreground(dimColor).Render(fmt.Sprintf("   ⇅ %s %s", m.sortMode.label(), dir))
 		}
-		if m.textQuery != "" {
-			parts = append(parts, "search: "+m.textQuery)
+		if m.projectView != "" && m.completedView == 1 {
+			scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ +completed")
+		} else if m.projectView != "" && m.completedView == 2 {
+			scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ completed only")
 		}
-		if len(parts) > 0 {
-			scope = "  " + strings.Join(parts, " · ")
-		}
-	}
-	if m.sortMode != sortNone {
-		dir := "↑"
-		if m.sortDesc {
-			dir = "↓"
-		}
-		scope += lipgloss.NewStyle().Foreground(dimColor).Render(fmt.Sprintf("   ⇅ %s %s", m.sortMode.label(), dir))
-	}
-	if m.projectView != "" && m.completedView == 1 {
-		scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ +completed")
-	} else if m.projectView != "" && m.completedView == 2 {
-		scope += lipgloss.NewStyle().Foreground(dueColor).Render("   ✓ completed only")
-	}
-	// Always-visible affordance for the ideas / mind-map area (opened with I).
-	scope += "   " + lipgloss.NewStyle().Foreground(labelColor).Bold(true).Render("💡 I") +
-		lipgloss.NewStyle().Foreground(dimColor).Render(" ideas")
-	left := lipgloss.JoinHorizontal(lipgloss.Center, title, statusStyle.Render(scope))
-	ver := lipgloss.NewStyle().Foreground(dimColor).Render("todo-ui " + version + " ")
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(ver)
-	header := left
-	if gap > 1 {
-		header = lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), ver)
+		// Always-visible affordance for the ideas / mind-map area (opened with I).
+		scope += "   " + lipgloss.NewStyle().Foreground(labelColor).Bold(true).Render("💡 I") +
+			lipgloss.NewStyle().Foreground(dimColor).Render(" ideas")
+		left := lipgloss.JoinHorizontal(lipgloss.Center, title, statusStyle.Render(scope))
+		header = m.headerWithVersion(left)
 	}
 	// While a sync runs, show a cyan indeterminate progress bar under the title
 	// bar — visible in every view (task list, mind map, detail, …).
@@ -4498,7 +4605,7 @@ func (m model) View() string {
 	}
 
 	// Mind-map editor takes over the whole body.
-	if m.mode == modeMindMap || m.mode == modeMindEdit || m.mode == modeMindSearch {
+	if m.mode == modeMindMap || m.mode == modeMindEdit || m.mode == modeMindSearch || m.mode == modeMindConfirmReset {
 		return m.mindMapView(header)
 	}
 	if m.mode == modeMindHelp {
@@ -4634,7 +4741,7 @@ func (m model) ideaView(header string) string {
 				}
 				when := dim.Render(shortTime(idea.At))
 				if n := idea.countNodes(); n > 0 {
-					when += "  " + dim.Render(fmt.Sprintf("🗺 %d", n))
+					when += "  " + dim.Render(fmt.Sprintf("❖ %d", n))
 				}
 				text := txtStyle.Width(innerW).Render(strings.ReplaceAll(strings.TrimSpace(idea.Text), "\n", " "))
 				rows = append(rows, cur+when, "  "+text, "")
@@ -5378,7 +5485,7 @@ func helpLines() []string {
 		head.Render("  Ideas & focus"),
 		row("i", "💡 Catch an idea (saved locally; works even while pinned)"),
 		row("I", "💡 Browse captured ideas (x delete · esc close)"),
-		row("", "   enter on an idea → 🗺 mind map (press H inside for its own help)"),
+		row("", "   enter on an idea → ❖ mind map (press H inside for its own help)"),
 		row("", "   map: tab child · enter sibling · ←→/hl move · t task · T→project · x done · c/C·b/B colour"),
 		row("^", "Pin — focus on one task; only it shows (this session)"),
 		row("", "   while pinned: > add comment · v show/hide comments"),

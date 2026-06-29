@@ -558,25 +558,16 @@ func (c *mindCanvas) connect(p *mindBox) {
 // mindMapView renders the whole mind-map screen: title, the boxed diagram (with
 // a viewport that follows the cursor) and the key-hint footer.
 func (m model) mindMapView(header string) string {
-	yellow := lipgloss.NewStyle().Foreground(dueColor).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(subColor)
 
 	root, all, cw, ch := m.buildMindBoxes()
 
 	accentKey := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
 
-	// Bound-project state drives both the title and the T hint.
+	// Bound-project state drives the T hint (the title now lives in the header).
 	bound := ""
 	if m.mindIdea >= 0 && m.mindIdea < len(m.ideas) {
 		bound = m.ideas[m.mindIdea].ProjectName
-	}
-	title := yellow.Render("🗺  Mind map")
-	if m.mindOverview {
-		title = yellow.Render("🗺  Mind map — overview") +
-			lipgloss.NewStyle().Foreground(subColor).Render("  (all expanded · read-only)")
-	}
-	if bound != "" {
-		title += lipgloss.NewStyle().Foreground(projectColor).Render("  → " + bound)
 	}
 
 	tHint := "T→project"
@@ -585,6 +576,11 @@ func (m model) mindMapView(header string) string {
 	}
 	var footer string
 	switch {
+	case m.mode == modeMindConfirmReset:
+		footer = accentKey.Render("⚠ Clear ALL node styles?") +
+			dim.Render("  colours & text style reset to default · ") +
+			accentKey.Render("y") + dim.Render(" confirm · ") +
+			accentKey.Render("n") + dim.Render(" cancel")
 	case m.mode == modeMindSearch:
 		footer = accentKey.Render("/ search") + dim.Render("  ") + m.input.View() +
 			dim.Render("   enter jump · esc cancel")
@@ -612,7 +608,8 @@ func (m model) mindMapView(header string) string {
 			accentKey.Render("o/O") + dim.Render(" outline · ") +
 			accentKey.Render("f/F") + dim.Render(" font · ") +
 			accentKey.Render("g/G") + dim.Render(" background · ") +
-			accentKey.Render("y/Y") + dim.Render(" style   ") + mindPaletteStrip()
+			accentKey.Render("y/Y") + dim.Render(" style · ") +
+			accentKey.Render("a/A") + dim.Render(" reset   ") + mindPaletteStrip()
 		footer = main + "\n" + style
 	}
 
@@ -624,7 +621,7 @@ func (m model) mindMapView(header string) string {
 
 	// Overview is full-screen: it drops the app header and the title line, so the
 	// map gets the whole terminal minus the footer.
-	viewH := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 3 // title + gap + margin
+	viewH := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 2 // scroll hint + gap
 	if m.mindOverview {
 		// Floating overview: no header/title/indicator/status/footer — the map
 		// gets the whole terminal (minus a top/bottom margin).
@@ -642,7 +639,7 @@ func (m model) mindMapView(header string) string {
 	}
 
 	if root == nil {
-		return lipgloss.JoinVertical(lipgloss.Left, header, title, "", dim.Render("  (empty)"), "", footer)
+		return lipgloss.JoinVertical(lipgloss.Left, header, "", dim.Render("  (empty)"), "", footer)
 	}
 
 	cv := newMindCanvas(cw, ch)
@@ -755,9 +752,9 @@ func (m model) mindMapView(header string) string {
 	if scrollX+viewW < cw {
 		sh = append(sh, "→")
 	}
-	titleLine := title
+	scrollHint := ""
 	if len(sh) > 0 {
-		titleLine = title + dim.Render("   more: "+strings.Join(sh, " "))
+		scrollHint = dim.Render("  more: " + strings.Join(sh, " "))
 	}
 
 	// Zoom overlay: float the selected node's full text, centered over the
@@ -783,7 +780,7 @@ func (m model) mindMapView(header string) string {
 		// edges. (Z / esc still close it; the keys just aren't shown.)
 		return lipgloss.NewStyle().Margin(1, 0, 0, mindOverviewMargin).Render(body)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, titleLine, "", body, "", footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, scrollHint, body, "", footer)
 }
 
 // mindOverviewMargin is the left margin (columns) kept around the overview so the
@@ -934,6 +931,8 @@ var mindPaletteActions = []mindAction{
 	{"G", "Background — node + children", mindRuneMsg('G')},
 	{"y", "Text style — this node", mindRuneMsg('y')},
 	{"Y", "Text style — node + children", mindRuneMsg('Y')},
+	{"a", "Reset styles — this node", mindRuneMsg('a')},
+	{"A", "Reset styles — node + children", mindRuneMsg('A')},
 	{"space", "Collapse / expand branch", mindRuneMsg(' ')},
 	{"Z", "Overview — full-screen, all expanded", mindRuneMsg('Z')},
 	{"d", "Toggle full node labels", mindRuneMsg('d')},
@@ -1006,7 +1005,7 @@ func (m model) mindPaletteView(header string) string {
 	keyStyle := lipgloss.NewStyle().Foreground(brandRed).Bold(true)
 	matches := m.mindPalFiltered()
 
-	lines := []string{"", "  " + accent.Render("🗺  Mind-map action") + dim.Render("   search: ") + m.palQuery + "▏", ""}
+	lines := []string{"", "  " + accent.Render("❖  Mind-map action") + dim.Render("   search: ") + m.palQuery + "▏", ""}
 
 	const win = 10
 	start := 0
@@ -1044,7 +1043,7 @@ func (m model) mindConfirmUnbindView(header string) string {
 		proj = m.ideas[m.mindIdea].ProjectName
 	}
 	rows := []string{
-		accent.Render("🗺  Unbind from " + proj + "?"),
+		accent.Render("❖  Unbind from " + proj + "?"),
 		"",
 		dim.Render("This unlinks every generated task in this map."),
 		dim.Render("The tasks already in Todoist are left in place."),
@@ -1085,7 +1084,7 @@ func (m model) mindHelpView(header string) string {
 	}
 
 	rows := []string{
-		yellow.Render("🗺  Mind-map keys"),
+		yellow.Render("❖  Mind-map keys"),
 		"",
 		head.Render("  Navigate"),
 		row("↑ / ↓ · j/k", "Previous / next sibling (or nearest node)"),
@@ -1132,6 +1131,7 @@ func (m model) mindHelpView(header string) string {
 		row("g / G", "Background fill"),
 		row("y / Y", "Text style — normal / bold / italic / underline"),
 		"  " + dim.Render("lowercase = this node · uppercase = node + all children"),
+		row("a / A", "Reset styles — this node / node + children (root asks y/n)"),
 		"  " + dim.Render("palette ") + mindPaletteStrip(),
 		"",
 		head.Render("  Leave"),

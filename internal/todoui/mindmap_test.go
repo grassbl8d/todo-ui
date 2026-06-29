@@ -1002,6 +1002,54 @@ func TestMindMapFontColourAndStyle(t *testing.T) {
 	}
 }
 
+func TestMindMapResetStyles(t *testing.T) {
+	m := mindModel(t)
+	m.ideas = []Idea{{Text: "Root", At: nowStamp(), Color: 2, Children: []*MindNode{
+		{Text: "A", Color: 1, FG: 3, BG: 4, Style: 2, Children: []*MindNode{{Text: "A1", BG: 5}}},
+	}}}
+	m.ideaCursor = 0
+	m = keyType(m, tea.KeyEnter)
+	m = key(m, 'l') // select A
+
+	// "a" clears THIS node only (no confirm); the child keeps its style.
+	m = key(m, 'a')
+	a := m.ideas[0].Children[0]
+	if a.Color != 0 || a.FG != 0 || a.BG != 0 || a.Style != 0 {
+		t.Fatalf("a should clear A's styles, got %+v", a)
+	}
+	if a.Children[0].BG != 5 {
+		t.Fatal("a must not touch the child")
+	}
+	m = key(m, 'u') // undo restores A
+	if m.ideas[0].Children[0].BG != 4 {
+		t.Fatalf("undo should restore A's styles, got %+v", m.ideas[0].Children[0])
+	}
+
+	// "A" on a non-root node clears it AND its subtree (no confirm).
+	m = key(m, 'A')
+	if m.ideas[0].Children[0].Children[0].BG != 0 {
+		t.Fatalf("A should clear the subtree, got %+v", m.ideas[0].Children[0].Children[0])
+	}
+
+	// "A" on the ROOT resets everything → asks for confirmation.
+	m = key(m, 'r') // back to root
+	m.ideas[0].Color = 2
+	m = key(m, 'A')
+	if m.mode != modeMindConfirmReset {
+		t.Fatalf("A on the root should open the reset confirmation, mode=%d", m.mode)
+	}
+	if m.ideas[0].Color != 2 {
+		t.Fatal("reset must not change anything before confirmation")
+	}
+	if v := m.View(); !strings.Contains(v, "Clear ALL node styles") {
+		t.Fatalf("confirmation prompt should render, got:\n%s", v)
+	}
+	m = key(m, 'y') // confirm → whole map cleared
+	if m.ideas[0].Color != 0 {
+		t.Fatalf("confirm should clear the root idea's style, got %d", m.ideas[0].Color)
+	}
+}
+
 func TestMindMapStyleSubtree(t *testing.T) {
 	m := mindModel(t)
 	m.ideas[0].Children = []*MindNode{{Text: "A", Children: []*MindNode{{Text: "A1"}}}}
