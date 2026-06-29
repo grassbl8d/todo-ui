@@ -28,6 +28,19 @@ Display image attachments on a task — render inline previews where the termina
 supports it (e.g. iTerm2/Kitty graphics protocols), with a text fallback (link +
 filename) elsewhere. Read-only first; uploading is a later step.
 
+### 🗺 Mind-map node scheduling
+Let mind-map nodes carry the same task metadata as real tasks: a **due date**, a
+**deadline**, and a **priority** (P1–P4), set right in the map with the same
+quick-pickers the task detail uses. When a node is converted to / linked with a
+Todoist task (`T`), these round-trip through sync; until then they're stored
+locally on the node and shown on its box.
+
+### 🔄 Mind-map online sync
+Sync ideas and their mind maps to the cloud so they're not local-only — survive a
+cache wipe and follow you across machines. Likely stored as Todoist task
+metadata/comments (or a dedicated project) so it rides the existing Sync API,
+with the same offline-first queue the tasks use.
+
 ### 🗂 Group by mode
 An explicit grouping mode for the task list, separate from sorting: group tasks
 by project, priority, label, due/added date, etc., with a real section header per
