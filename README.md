@@ -48,7 +48,8 @@ to the server when you sync.
 - **💡 Ideas & mind maps** — press `I` anywhere to capture and browse ideas, each
   expandable into a navigable mind map; `z` zooms a node's full text in a centered
   overlay.
-- **Browser-style navigation** — `b` back, `h` home, `H`/`?` (scrollable) help.
+- **Browser-style navigation** — `b` back, `.` home (global), `,` menu (global),
+  `H`/`?` (scrollable) help.
 
 ---
 
@@ -174,10 +175,10 @@ entirely from the keyboard.
 | `?`             | **Online search** — full Todoist filter grammar (needs network) |
 | `1`–`7`         | **Sort** by priority / due / deadline / project / name / labels / date added (`0` = default; repeat to reverse) |
 | `b`             | **Back** — return to the previous view (like a browser)      |
-| `h` / `Esc`     | **Home** — clear all filters & views, back to all tasks      |
+| `.` / `Esc`     | **Home** (global) — clear all filters & views and reset to the default sort |
 | `r`             | Refresh the view from the local cache                       |
 | `s`             | **Sync** — push queued changes & pull updates               |
-| `,`             | **Menu** — labels, auto-sync interval, date format & timezone |
+| `,`             | **Menu** (global) — labels, auto-sync, date format, timezone, default sort, mind-map options |
 | `X`             | **Clear data** — remove token, cache & queue (asks first)    |
 | `` ` ``         | **Quick action** — search & run any command (type to filter, ↑/↓, Enter) |
 | `~`             | **About** — logo, version & contributors                     |
@@ -222,7 +223,7 @@ server-side, so date/relative queries that the local evaluator doesn't handle wo
 e.g. `last 7 days`, `next week`, `deadline before: +3 days`, `created before: -30 days`,
 `assigned to: me`. Requires a network connection. Press `Esc` to leave results.
 
-Press `Esc` (or `h`) to clear and return to all tasks.
+Press `Esc` (or `.`) to clear and return to all tasks.
 
 ### Quick label views
 
@@ -275,36 +276,45 @@ shows a 🗺 badge with the node count.
 |--------------------|-----------------------------------------------------|
 | `↑`/`↓` · `j`/`k`  | Previous / next **sibling**                          |
 | `←`/`→` · `h`/`l`  | Go to parent / descend to first child               |
+| `Shift+↑` / `↓`    | **Reorder** — swap with the previous / next sibling |
+| `Shift+←`          | **Promote** — make the node a sibling of its parent |
 | `r`                | Jump to the **root** node (left-most)               |
 | `R`                | **Rename the root** node (the idea itself; ≥1 char) |
-| `Tab`              | Add a **child** of the selected node                |
-| `Enter`            | Add a **sibling** after the selected node           |
+| `/` · `n`/`N`      | **Search** nodes by text; next / previous match     |
+| `Tab`              | Add a **child** (while editing, accept + new child) |
+| `Enter`            | Add a **sibling** (while editing, accept + new sibling); `Esc` accepts without a new node |
 | `e` / `i`          | Edit the selected node's text                       |
 | `z`                | **Zoom** — overlay the selected node's full text, centered over the (dimmed) map; `z`/`Esc` close |
+| `Z`                | **Overview** — full-screen, all-expanded, read-only floating map; `Z`/`Esc` close |
+| `d`                | Toggle **full (untruncated) node labels**           |
 | `Space`            | Collapse / expand a branch (`(+n)` marks hidden kids) |
-| `d` / `Del`        | Delete the node and its subtree (asks y/n; a linked Todoist task is left in place) |
+| `Backspace` / `Del`| Delete the node and its subtree (no prompt — `u` undoes it) |
+| `u`                | **Undo** the last change (paste, cut, delete, reorder, …) |
+| `x` / `c` / `v` `V`| **Cut** / **copy** / **paste as child** / **paste as sibling** |
 | `t`                | **Mark / unmark as a task** — shows a `[ ]` checkbox |
 | `T`                | **Convert** marked tasks → tasks in a project (type a name to create it) |
 | `U`                | **Unbind** the idea's project and unlink its tasks (asks y/n) |
-| `x`                | **Complete / reopen** a task node (`[x]`); does nothing on a non-task node (use `d` to delete) |
+| `X`                | **Complete / reopen** a task node (`[x]`)            |
 | `s`                | **Sync** with Todoist (push tasks, pull completions) |
-| `c` / `C`          | Cycle **outline** colour — `C` includes all children |
-| `v` / `V`          | Cycle **background** fill — `V` includes all children |
+| `o`/`O` · `f`/`F` · `g`/`G` · `y`/`Y` | **Colour & style** — outline · font · background · style (lowercase = node, uppercase = node + children) |
+| `p` · `.` · `,`    | Projects list · home · menu (global)                |
 | `` ` ``            | **Quick-action palette** (search & run any map command) |
 | `H` / `?`          | Dedicated mind-map help                              |
 | `Esc` / `q` / `b`  | Save and return to the idea list (`b` = back)       |
 
-New nodes open straight into edit mode; pressing `Esc` (or leaving them blank) discards an
-empty new node, so the tree never keeps placeholders. Selection is shown by **underlining**
-the current node, so a node's own colour stays visible while it's selected.
+New nodes open straight into edit mode; pressing `Esc` on a blank new node discards it, so the
+tree never keeps placeholders. The selected node is shown by a bright **underline**, so its own
+colour stays visible while it's selected. A dedicated **🎨 styling row** in the footer shows the
+colour/style controls and the 10-colour palette at a glance.
 
 **Tasks & sync.** `t` flags a node as a task; `T` turns every marked node into real Todoist
 tasks under a project you pick (type a new name and it's created on the spot). An idea **binds
 to a single project** — the bound name shows in the title (`🗺 Mind map → #Work`) and on the
 `T` hint; pressing `T` again just tops up newly-marked tasks. Each node is **linked** to its
-task, so `x` completes it (and the task on next `s` sync), and if you tick the task off in
+task, so `X` completes it (and the task on next `s` sync), and if you tick the task off in
 Todoist it shows as `[x]` here after a sync. `U` unbinds the project and unlinks the generated
-tasks. There are **10 node colours** that `c`/`C` (outline) and `b`/`B` (fill) cycle through.
+tasks. Each node has **10 colours** for outline (`o`/`O`), font (`f`/`F`) and background
+(`g`/`G`), plus a text-style cycle (`y`/`Y` — normal / bold / italic / underline).
 
 ### Theme
 

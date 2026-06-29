@@ -7,7 +7,38 @@ suffix for the upcoming version.
 
 ## Unreleased — v0.2.5-dev
 
-_Nothing yet._
+### Changed (breaking — keybindings)
+- **Home is now `.`** (was `h`) on every screen — the task list, detail, ideas
+  list, help, options, and the mind map. This frees **`h`** for navigation
+  (vim-style "left/parent") everywhere, including the task list.
+- **The settings menu (`,`) is now global** — open it from any screen, and
+  closing it returns you to where you were (not always the task list).
+- Home now also **resets the sort** to the default chosen in the menu, not just
+  the filters.
+- (From the mind-map work earlier this cycle) node **delete** is `Backspace`/`Del`
+  (the `d` confirmation is gone — `u` undoes), **complete a task node** is `X`,
+  and colours are `o/O` outline · `f/F` font · `g/G` background · `y/Y` style.
+
+### Added
+- **Sort bar in the task list**: a dedicated footer row shows the sort options
+  (`1`–`7`) with the active one highlighted and its `↑`/`↓` direction — mirroring
+  the mind map's styling bar.
+- **Floating overview**: the mind-map overview (`Z`) is now a plain, full-screen
+  floating map — no header, indicator, status, or footer. `Z`/`esc` still close.
+- **Mind-map node formatting**: in addition to the **outline** colour (`o`/`O`),
+  nodes now have a **font/text colour** (`f`/`F`), a **background fill**
+  (`g`/`G`, moved off `f`), and a **text-style cycle** (`y`/`Y` — normal → bold →
+  italic → underline). Lowercase applies to the node, uppercase to the node and
+  all its children. A dedicated **🎨 styling row** in the mind-map footer always
+  shows the outline / font / background / style controls plus the colour palette,
+  so changing a node's look is one glance away (also listed in the `H` help).
+- **Longer, configurable mind-map node labels**: labels now truncate at 48 chars
+  by default (was 26), and a new **"Node label width"** entry in the `,` menu
+  cycles 24 / 36 / 48 / 64 / 80.
+- **Full-label toggle (`d`) in the mind map**: shows every node's full,
+  untruncated text in the normal (navigable) map — the same display as the
+  overview, but you can still move around and edit. `d` again restores
+  truncation.
 
 ## v0.2.4 — 2026-06-29
 
